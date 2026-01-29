@@ -10,10 +10,25 @@ const SUPABASE_PUBLISHABLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiO
 
 const isBrowser = typeof window !== "undefined";
 
+// ATLAS rule: never use localStorage.
+// Supabase storage adapter for browser that keeps tokens in-memory only.
+const memoryStorage = (() => {
+  let store: Record<string, string> = {};
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+  };
+})();
+
 export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: {
     // Next.js build/prerender runs on the server where localStorage doesn't exist.
-    storage: isBrowser ? window.localStorage : undefined,
+    storage: isBrowser ? memoryStorage : undefined,
     persistSession: isBrowser,
     autoRefreshToken: isBrowser,
   },

@@ -4,11 +4,11 @@ import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { phase2Store } from "@/lib/phase2-store"
 import { useAuth } from "@/lib/auth-context"
 import type { PreviewType } from "@/lib/types"
 import { Sparkles, Loader2, User, ImagePlus } from "lucide-react"
 import { toast } from "sonner"
+import { supabase } from "@/src/integrations/supabase/client"
 
 interface PreviewGeneratorProps {
   digitalTwinId: string
@@ -45,7 +45,7 @@ export function PreviewGenerator({
   const [isGenerating, setIsGenerating] = useState(false)
 
   const handleGenerate = async () => {
-    if (!user || !phase2Store) {
+    if (!user) {
       toast.error("Authentication required", {
         description: "You must be logged in to generate previews.",
       })
@@ -55,14 +55,37 @@ export function PreviewGenerator({
     setIsGenerating(true)
 
     try {
-      // Simulate generation time (Preview Atlas async behavior)
-      await new Promise((resolve) => setTimeout(resolve, 2000))
+      // Resolve model for this Digital Twin
+      const { data: forge, error: forgeError } = await supabase
+        .from("forges")
+        .select("model_id")
+        .eq("digital_twin_id", digitalTwinId)
+        .maybeSingle()
 
-      phase2Store.generatePreview(
-        digitalTwinId,
-        selectedType,
-        user.id,
-      )
+      if (forgeError) throw forgeError
+      if (!forge?.model_id) throw new Error("Digital Twin não encontrado (forge sem model_id)")
+
+      // Use a real capture as the preview source (no mocks/placeholders)
+      const { data: capture, error: captureError } = await supabase
+        .from("captures")
+        .select("id, asset_url")
+        .eq("model_id", forge.model_id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (captureError) throw captureError
+      if (!capture?.id || !capture.asset_url) {
+        throw new Error("Não há captures válidas para este modelo; faça upload de uma capture primeiro")
+      }
+
+      const { error: insertError } = await supabase.from("previews").insert({
+        capture_id: capture.id,
+        preview_url: capture.asset_url,
+        approved: false,
+      })
+
+      if (insertError) throw insertError
 
       toast.success("Preview generated", {
         description: "The preview will expire in 7 days.",
