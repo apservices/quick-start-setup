@@ -22,26 +22,10 @@ class SystemLogger {
   private errorWindow: number[] = []
 
   constructor() {
-    this.loadFromStorage()
+    // Security: do not persist logs in localStorage.
   }
 
-  private loadFromStorage() {
-    if (typeof window === "undefined") return
-    const stored = localStorage.getItem("atlas_system_logs")
-    if (stored) {
-      this.logs = JSON.parse(stored).map((l: LogEntry) => ({
-        ...l,
-        timestamp: new Date(l.timestamp),
-      }))
-    }
-  }
-
-  private saveToStorage() {
-    if (typeof window === "undefined") return
-    // Keep only recent logs
-    const recentLogs = this.logs.slice(-this.maxLogs)
-    localStorage.setItem("atlas_system_logs", JSON.stringify(recentLogs))
-  }
+  private saveToStorage() {}
 
   private createEntry(
     level: LogLevel,
@@ -64,28 +48,24 @@ class SystemLogger {
   debug(message: string, source: string, context?: Record<string, unknown>) {
     const entry = this.createEntry("debug", message, source, context)
     this.logs.push(entry)
-    this.saveToStorage()
     console.debug(`[${source}]`, message, context || "")
   }
 
   info(message: string, source: string, context?: Record<string, unknown>) {
     const entry = this.createEntry("info", message, source, context)
     this.logs.push(entry)
-    this.saveToStorage()
     console.info(`[${source}]`, message, context || "")
   }
 
   warn(message: string, source: string, context?: Record<string, unknown>) {
     const entry = this.createEntry("warn", message, source, context)
     this.logs.push(entry)
-    this.saveToStorage()
     console.warn(`[${source}]`, message, context || "")
   }
 
   error(message: string, source: string, error?: Error, context?: Record<string, unknown>) {
     const entry = this.createEntry("error", message, source, context, error?.stack)
     this.logs.push(entry)
-    this.saveToStorage()
 
     // Track error rate
     this.errorWindow.push(Date.now())
@@ -135,7 +115,6 @@ class SystemLogger {
   // Clear old logs
   clearOldLogs(olderThan: Date) {
     this.logs = this.logs.filter((l) => l.timestamp >= olderThan)
-    this.saveToStorage()
   }
 
   // Export logs
@@ -171,7 +150,7 @@ export function getSystemHealth(): SystemHealth {
   if (errorRate > 10) status = "unhealthy"
   else if (errorRate > 5) status = "degraded"
 
-  // Get metrics from localStorage (simulated)
+  // Metrics are kept minimal and computed in-memory.
   let metrics = {
     totalForges: 0,
     certifiedForges: 0,
@@ -180,21 +159,6 @@ export function getSystemHealth(): SystemHealth {
     activePreviews: 0,
     activeLicenses: 0,
     errorRate,
-  }
-
-  if (typeof window !== "undefined") {
-    const forges = JSON.parse(localStorage.getItem("atlas_forges") || "[]")
-    const models = JSON.parse(localStorage.getItem("atlas_models") || "[]")
-
-    metrics = {
-      totalForges: forges.length,
-      certifiedForges: forges.filter((f: { state: string }) => f.state === "CERTIFIED").length,
-      activeModels: models.filter((m: { status: string }) => m.status === "ACTIVE").length,
-      pendingValidations: forges.filter((f: { state: string }) => f.state === "VALIDATED").length,
-      activePreviews: 0,
-      activeLicenses: 0,
-      errorRate,
-    }
   }
 
   return {

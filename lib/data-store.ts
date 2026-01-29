@@ -22,84 +22,17 @@ class DataStore {
   private models: Map<string, Model> = new Map()
   private forges: Map<string, Forge> = new Map()
   private captureAssets: Map<string, CaptureAsset[]> = new Map()
+  private auditLogs: AuditLog[] = []
   private lastAuditLogHash = ""
 
   constructor() {
-    this.loadFromStorage()
     this.initializeDemoData()
   }
 
-  private loadFromStorage() {
-    if (typeof window === "undefined") return
-
-    try {
-      const models = localStorage.getItem("atlas_models")
-      const forges = localStorage.getItem("atlas_forges")
-      const assets = localStorage.getItem("atlas_assets")
-      const lastHash = localStorage.getItem("atlas_last_audit_hash")
-
-      if (models) {
-        const parsed = JSON.parse(models)
-        parsed.forEach((m: Model) =>
-          this.models.set(m.id, {
-            ...m,
-            createdAt: new Date(m.createdAt),
-            updatedAt: new Date(m.updatedAt),
-            consentDate: m.consentDate ? new Date(m.consentDate) : undefined,
-          }),
-        )
-      }
-
-      if (forges) {
-        const parsed = JSON.parse(forges)
-        parsed.forEach((f: Forge) =>
-          this.forges.set(f.id, {
-            ...f,
-            createdAt: new Date(f.createdAt),
-            updatedAt: new Date(f.updatedAt),
-            certifiedAt: f.certifiedAt ? new Date(f.certifiedAt) : undefined,
-          }),
-        )
-      }
-
-      if (assets) {
-        const parsed = JSON.parse(assets)
-        Object.entries(parsed).forEach(([forgeId, assetList]) => {
-          this.captureAssets.set(
-            forgeId,
-            (assetList as CaptureAsset[]).map((a) => ({
-              ...a,
-              uploadedAt: new Date(a.uploadedAt),
-            })),
-          )
-        })
-      }
-
-      if (lastHash) {
-        this.lastAuditLogHash = lastHash
-      }
-    } catch (error) {
-      systemLogger?.error("Failed to load data from storage", "DataStore", error as Error)
-    }
-  }
-
-  private saveToStorage() {
-    if (typeof window === "undefined") return
-
-    try {
-      localStorage.setItem("atlas_models", JSON.stringify(Array.from(this.models.values())))
-      localStorage.setItem("atlas_forges", JSON.stringify(Array.from(this.forges.values())))
-      localStorage.setItem("atlas_last_audit_hash", this.lastAuditLogHash)
-
-      const assetsObj: Record<string, CaptureAsset[]> = {}
-      this.captureAssets.forEach((assets, forgeId) => {
-        assetsObj[forgeId] = assets
-      })
-      localStorage.setItem("atlas_assets", JSON.stringify(assetsObj))
-    } catch (error) {
-      systemLogger?.error("Failed to save data to storage", "DataStore", error as Error)
-    }
-  }
+  // Security: this store is intentionally in-memory only.
+  // Do NOT persist models/forges/assets/audit logs in localStorage.
+  // (Persistence should be implemented via Supabase DB + RLS.)
+  private saveToStorage() {}
 
   private initializeDemoData() {
     if (this.models.size > 0) return
@@ -182,7 +115,6 @@ class DataStore {
 
     demoModels.forEach((m) => this.models.set(m.id, m))
     demoForges.forEach((f) => this.forges.set(f.id, f))
-    this.saveToStorage()
   }
 
   // Model operations with validation
@@ -220,7 +152,6 @@ class DataStore {
       updatedAt: new Date(),
     }
     this.models.set(model.id, model)
-    this.saveToStorage()
 
     systemLogger?.info("Model created", "DataStore", { modelId: model.id })
     return model
@@ -241,7 +172,6 @@ class DataStore {
 
     const updated = { ...model, ...data, updatedAt: new Date() }
     this.models.set(id, updated)
-    this.saveToStorage()
 
     systemLogger?.info("Model updated", "DataStore", { modelId: id })
     return updated
@@ -250,7 +180,6 @@ class DataStore {
   deleteModel(id: string): boolean {
     const deleted = this.models.delete(id)
     if (deleted) {
-      this.saveToStorage()
       systemLogger?.info("Model deleted", "DataStore", { modelId: id })
     }
     return deleted
@@ -295,7 +224,6 @@ class DataStore {
       createdBy,
     }
     this.forges.set(forge.id, forge)
-    this.saveToStorage()
 
     systemLogger?.info("Forge created", "DataStore", { forgeId: forge.id, modelId })
     return forge
@@ -345,7 +273,6 @@ class DataStore {
 
     const updated = { ...forge, ...updates }
     this.forges.set(id, updated)
-    this.saveToStorage()
 
     systemLogger?.info("Forge state changed", "DataStore", {
       forgeId: id,
@@ -372,7 +299,6 @@ class DataStore {
       updatedAt: new Date(),
     }
     this.forges.set(id, updated)
-    this.saveToStorage()
     return updated
   }
 
@@ -400,7 +326,6 @@ class DataStore {
     const existing = this.captureAssets.get(forgeId) || []
     existing.push(newAsset)
     this.captureAssets.set(forgeId, existing)
-    this.saveToStorage()
 
     return newAsset
   }
@@ -419,30 +344,16 @@ class DataStore {
       previousLogHash: this.lastAuditLogHash || undefined,
     }
 
-    const logs = JSON.parse(localStorage.getItem("atlas_audit_logs") || "[]")
-    logs.push(newLog)
-    localStorage.setItem("atlas_audit_logs", JSON.stringify(logs))
+    this.auditLogs.push(newLog)
 
     // Update chain hash
     this.lastAuditLogHash = integrityHash
-    localStorage.setItem("atlas_last_audit_hash", integrityHash)
 
     return newLog
   }
 
   getAuditLogs(): AuditLog[] {
-    if (typeof window === "undefined") return []
-    try {
-      const logs = JSON.parse(localStorage.getItem("atlas_audit_logs") || "[]")
-      return logs
-        .map((l: AuditLog) => ({
-          ...l,
-          timestamp: new Date(l.timestamp),
-        }))
-        .sort((a: AuditLog, b: AuditLog) => b.timestamp.getTime() - a.timestamp.getTime())
-    } catch {
-      return []
-    }
+    return [...this.auditLogs].sort((a: AuditLog, b: AuditLog) => b.timestamp.getTime() - a.timestamp.getTime())
   }
 
   // Verify audit log integrity

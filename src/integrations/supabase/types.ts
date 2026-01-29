@@ -14,7 +14,378 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      audit_logs: {
+        Row: {
+          action: string | null
+          actor_id: string | null
+          created_at: string | null
+          id: string
+          target_id: string | null
+          target_table: string | null
+        }
+        Insert: {
+          action?: string | null
+          actor_id?: string | null
+          created_at?: string | null
+          id?: string
+          target_id?: string | null
+          target_table?: string | null
+        }
+        Update: {
+          action?: string | null
+          actor_id?: string | null
+          created_at?: string | null
+          id?: string
+          target_id?: string | null
+          target_table?: string | null
+        }
+        Relationships: []
+      }
+      brand_models: {
+        Row: {
+          brand_id: string | null
+          created_at: string | null
+          id: string
+          model_id: string | null
+          status: string | null
+        }
+        Insert: {
+          brand_id?: string | null
+          created_at?: string | null
+          id?: string
+          model_id?: string | null
+          status?: string | null
+        }
+        Update: {
+          brand_id?: string | null
+          created_at?: string | null
+          id?: string
+          model_id?: string | null
+          status?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "brand_models_brand_id_fkey"
+            columns: ["brand_id"]
+            isOneToOne: false
+            referencedRelation: "brands"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "brand_models_model_id_fkey"
+            columns: ["model_id"]
+            isOneToOne: false
+            referencedRelation: "models"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      brands: {
+        Row: {
+          created_at: string | null
+          id: string
+          name: string
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          name: string
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          name?: string
+        }
+        Relationships: []
+      }
+      captures: {
+        Row: {
+          asset_url: string
+          created_at: string | null
+          id: string
+          model_id: string | null
+          status: string | null
+        }
+        Insert: {
+          asset_url: string
+          created_at?: string | null
+          id?: string
+          model_id?: string | null
+          status?: string | null
+        }
+        Update: {
+          asset_url?: string
+          created_at?: string | null
+          id?: string
+          model_id?: string | null
+          status?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "captures_model_id_fkey"
+            columns: ["model_id"]
+            isOneToOne: false
+            referencedRelation: "models"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      contracts: {
+        Row: {
+          brand_name: string | null
+          created_at: string | null
+          id: string
+          license_id: string | null
+          signed: boolean | null
+        }
+        Insert: {
+          brand_name?: string | null
+          created_at?: string | null
+          id?: string
+          license_id?: string | null
+          signed?: boolean | null
+        }
+        Update: {
+          brand_name?: string | null
+          created_at?: string | null
+          id?: string
+          license_id?: string | null
+          signed?: boolean | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contracts_license_id_fkey"
+            columns: ["license_id"]
+            isOneToOne: false
+            referencedRelation: "licenses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      financeiro_transacoes: {
+        Row: {
+          contract_id: string | null
+          created_at: string | null
+          id: string
+          tipo: string | null
+          valor: number
+        }
+        Insert: {
+          contract_id?: string | null
+          created_at?: string | null
+          id?: string
+          tipo?: string | null
+          valor: number
+        }
+        Update: {
+          contract_id?: string | null
+          created_at?: string | null
+          id?: string
+          tipo?: string | null
+          valor?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "financeiro_transacoes_contract_id_fkey"
+            columns: ["contract_id"]
+            isOneToOne: false
+            referencedRelation: "contracts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      job_applications: {
+        Row: {
+          created_at: string | null
+          id: string
+          job_id: string | null
+          model_id: string | null
+          status: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          job_id?: string | null
+          model_id?: string | null
+          status?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          job_id?: string | null
+          model_id?: string | null
+          status?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "job_applications_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_applications_model_id_fkey"
+            columns: ["model_id"]
+            isOneToOne: false
+            referencedRelation: "models"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      jobs: {
+        Row: {
+          brand_id: string | null
+          created_at: string | null
+          description: string | null
+          id: string
+          status: string | null
+          title: string
+        }
+        Insert: {
+          brand_id?: string | null
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          status?: string | null
+          title: string
+        }
+        Update: {
+          brand_id?: string | null
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          status?: string | null
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "jobs_brand_id_fkey"
+            columns: ["brand_id"]
+            isOneToOne: false
+            referencedRelation: "brands"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      licenses: {
+        Row: {
+          created_at: string | null
+          id: string
+          model_id: string | null
+          usage_type: string | null
+          valid_until: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          model_id?: string | null
+          usage_type?: string | null
+          valid_until?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          model_id?: string | null
+          usage_type?: string | null
+          valid_until?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "licenses_model_id_fkey"
+            columns: ["model_id"]
+            isOneToOne: false
+            referencedRelation: "models"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      models: {
+        Row: {
+          city: string | null
+          created_at: string | null
+          email: string
+          full_name: string
+          id: string
+          status: string | null
+          user_id: string | null
+        }
+        Insert: {
+          city?: string | null
+          created_at?: string | null
+          email: string
+          full_name: string
+          id?: string
+          status?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          city?: string | null
+          created_at?: string | null
+          email?: string
+          full_name?: string
+          id?: string
+          status?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      previews: {
+        Row: {
+          approved: boolean | null
+          capture_id: string | null
+          created_at: string | null
+          id: string
+          preview_url: string
+        }
+        Insert: {
+          approved?: boolean | null
+          capture_id?: string | null
+          created_at?: string | null
+          id?: string
+          preview_url: string
+        }
+        Update: {
+          approved?: boolean | null
+          capture_id?: string | null
+          created_at?: string | null
+          id?: string
+          preview_url?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "previews_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "captures"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          city: string | null
+          created_at: string | null
+          full_name: string | null
+          id: string
+          role: string
+        }
+        Insert: {
+          city?: string | null
+          created_at?: string | null
+          full_name?: string | null
+          id: string
+          role: string
+        }
+        Update: {
+          city?: string | null
+          created_at?: string | null
+          full_name?: string | null
+          id?: string
+          role?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
