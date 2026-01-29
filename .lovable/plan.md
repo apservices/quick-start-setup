@@ -1,163 +1,295 @@
 
+Objetivo geral (ATLAS Next Phases)
+- Evoluir o ATLAS para uma plataforma comercial completa (Model Portal + Brand Portal + dashboards profissionais + base de API + placeholder real de certificação hash), sem recriar arquitetura existente e usando apenas Supabase como fonte de verdade.
+- Antes de qualquer expansão, estabilizar o pipeline de build/publicação (no estado atual há falha de build).
+
+Contexto técnico importante (o que encontrei)
+- O projeto é Next.js (App Router) e já possui `next.config.mjs`.
+- O script `build:dev` foi criado apontando para `vite build --mode development`, mas:
+  - `vite.config.ts` depende de `@vitejs/plugin-react-swc`.
+  - Existe `pnpm-lock.yaml` e `bun.lockb` no repo. O `pnpm-lock.yaml` NÃO contém `@vitejs/plugin-react-swc`, o que indica risco de o pipeline estar usando pnpm e não instalando o plugin.
+  - O `index.html` está vazio, o que faria um build Vite falhar mesmo que o plugin existisse (não há entrypoint Vite em `src/`).
+- Você confirmou a decisão: `build:dev` deve usar Next build (mais simples e alinhado ao app real).
+
+Também confirmado via perguntas
+- Brand linkage: criar `brand_users` (tabela de relação entre user e brand).
+- Role: usar role nova `brand` (não reutilizar `client`).
+- API Key (Fase 7): guardar em env var do Lovable (para validar header no server).
+
+Estratégia de entrega (para reduzir risco)
+- Entregar em milestones, em ordem: “Build/Publish OK” → “Model Technical Profile” → “Model Portal” → “Brand Portal” → “Licensing UI” → “Contracts UI” → “Audit viewer” → “Public API foundation” → “Certificate hash”.
+- Cada fase inclui: (1) ajustes mínimos de schema/RLS, (2) wiring no frontend/rotas, (3) teste end-to-end guiado.
+
+========================
+FASE 0 — Stabilize Build/Publish (obrigatório antes das fases)
+========================
+0.1 Trocar `build:dev` para Next
+- Atualizar `package.json`:
+  - `"build:dev": "next build"`
+- Motivo: remove dependência de Vite para o pipeline de publish, elimina falha do `vite.config.ts`, e alinha com o build real do app.
+- Resultado esperado: publish não trava por “failed to load config … vite.config.ts”.
+
+0.2 Resolver ambiguidade de package manager (lockfiles)
+- Padronizar para 1 lockfile para evitar installs inconsistentes no pipeline do Lovable:
+  - Opção recomendada: manter `package-lock.json` e remover `pnpm-lock.yaml` e `bun.lockb`.
+- Motivo: hoje o `pnpm-lock.yaml` não contém deps recentes (ex.: plugin-react-swc), e isso pode causar “Cannot find module …” em builds que usam pnpm por heurística.
+
+0.3 Limpeza de configuração que conflita com regras ATLAS
+- O projeto hoje contém `.env` no repo (foi criado anteriormente). Pelas regras do Lovable/Supabase neste projeto, não devemos depender de `.env` no repositório para segredos.
+- Ajuste planejado:
+  - Remover dependência de `.env` e usar:
+    - Supabase URL/anon key já hardcoded em `src/integrations/supabase/client.ts` (publishable ok)
+    - para secrets privados, usar Supabase secrets ou Lovable env var (conforme o caso)
+  - (Sem quebrar o que já está funcionando)
+
+Critério de aceite Fase 0
+- Publish completa sem erro genérico “Publishing failed”.
+- `next build` executa no pipeline.
+
+========================
+FASE 1 — Model Technical Profile (Ficha técnica automática)
+========================
+Rotas novas
+- Criar: `/dashboard/model/profile` (área do dashboard, acessível com RBAC role=model).
+
+Dados exibidos (todos via Supabase, sem mocks)
+- full_name, email, city, status do modelo
+- total captures, valid captures, missing captures
+- previews gerados (contagem)
+- licenses ativas (contagem)
+- contracts vinculados (contagem)
+
+Campos editáveis pelo Model
+- city
+- telefone
+
+Mudanças de Banco (migração)
+1) Adicionar `phone` (telefone) em `public.profiles`
+- `ALTER TABLE public.profiles ADD COLUMN phone text;`
+- (City já existe em `profiles` e em `models`; vamos definir fonte única no app — ver abaixo.)
+
+2) Permitir update controlado (RLS)
+- Hoje `profiles` não tem policy de UPDATE; e `models` também não tem policy de UPDATE para model.
+- Para o escopo da fase:
+  - Criar policy “profiles self update (limited)” permitindo update apenas do próprio registro.
+  - (Opcional para reforçar) Criar trigger para impedir update do campo `role` em profiles (role é display-only e não pode virar vetor de escalonamento).
+- Para `models`, decidiremos se city/status ficam no models ou profiles para edição. Recomendação:
+  - editar `profiles.city` e `profiles.phone` no portal (perfil do usuário)
+  - manter `models.city` apenas como espelho/legado (não editar) ou sincronizar explicitamente (decisão técnica: minimizar duplicidade).
+
+Consultas (frontend)
+- Buscar modelo via `models.user_id = auth.uid()` (ou via link existente do usuário no app).
+- Agregações:
+  - captures: total e breakdown por status (valid/missing) (precisa mapear “valid” vs “pending/invalid” do schema atual; vamos padronizar as categorias exibidas sem alterar o fluxo existente)
+  - previews: contar por model via join `previews.capture_id -> captures.model_id`
+  - licenses: schema atual usa `licenses.model_id` (ok)
+  - contracts: via `contracts.license_id -> licenses.id`
+
+UI
+- Usar componentes shadcn existentes (Card, Table, Badge, Tabs).
+- Sem redesign: layout simples em cards + métricas.
+
+Critério de aceite Fase 1
+- Model acessa `/dashboard/model/profile` e vê números reais.
+- Model edita city/telefone e a mudança persiste no Supabase (com RLS).
+
+========================
+FASE 2 — Model Portal (/model)
+========================
+Rota nova
+- Criar `/model` (portal externo do modelo) protegido por RBAC role=model.
+
+Conteúdo
+- Sua ficha técnica (reuse do componente da Fase 1)
+- Suas capturas (listagem / galeria com URLs reais)
+- Seus previews
+- Suas licenças
+- Histórico de contratos
+- Logs de auditoria do próprio modelo (filtrado por actor_id=model user, e/ou por model_id/target_id quando aplicável)
+
+Backend/RLS
+- Garantir SELECT apropriado para model:
+  - `captures`: policy já existe para “model reads own captures”
+  - `previews`: policy já existe para “model reads own previews”
+  - `licenses`: policy já existe “model reads own licenses”
+  - `audit_logs`: hoje apenas admin lê. Para essa fase, adicionar policy de SELECT para o próprio usuário (actor_id = auth.uid()) e/ou logs relacionados ao seu model. (Preferência: permitir apenas logs do próprio actor_id por segurança.)
+
+Critério de aceite Fase 2
+- Usuário MODEL acessa `/model` e vê apenas seus dados.
+
+========================
+FASE 3 — Brand Portal (/brand)
+========================
+Pré-requisito: suporte a role brand
+- O enum `public.app_role` hoje: ('admin','operator','model','client').
+- Precisamos adicionar `brand`.
+
+Mudanças de Banco (migração)
+1) Alterar enum
+- `ALTER TYPE public.app_role ADD VALUE IF NOT EXISTS 'brand';`
+
+2) Criar tabela `public.brand_users`
+- Colunas sugeridas:
+  - `id uuid pk default gen_random_uuid()`
+  - `brand_id uuid not null references public.brands(id)`
+  - `user_id uuid not null` (não referenciar auth.users diretamente via FK se quisermos seguir estritamente a diretriz de não FK com auth; se já adotado em outros pontos, manter consistência do projeto)
+  - `created_at timestamptz default now()`
+  - UNIQUE(brand_id, user_id)
+- RLS:
+  - Admin: manage all
+  - Brand user: select rows where `user_id = auth.uid()`
+- Função helper (security definer) opcional:
+  - `public.user_brand_ids(user_id uuid)` para facilitar policies sem recursão e melhorar legibilidade.
+
+3) Policies para brand consumir dados
+- `brand_models`: permitir SELECT para brand quando brand_id pertence ao user via brand_users.
+- `brands`: permitir SELECT do próprio brand (por brand_users).
+- `contracts` e `financeiro_transacoes`: hoje só admin. Para portal de brand, precisamos permitir SELECT “do brand”:
+  - Se `contracts` não tem `brand_id`, hoje só tem `brand_name`. Para suportar portal comercial real, precisaremos link consistente.
+  - Proposta mínima e compatível:
+    - adicionar `contracts.brand_id uuid references brands(id)` (mantendo `brand_name` por compat/legado)
+    - e ajustar criação de contracts (quando cria contrato ao criar licença) para preencher brand_id.
+  - `financeiro_transacoes` já referencia `contract_id`, então o filtro vem de contracts.
+
+Rota nova
+- Criar `/brand` protegido por RBAC role=brand.
+
+Conteúdo
+- Modelos vinculados via `brand_models`
+- Ficha técnica read-only dos modelos
+- Previews liberados (conforme regras atuais do sistema; se “liberação” ainda não existir no schema, manter apenas o que já está permitido por RLS e tabelas existentes)
+- Assets licenciados (bucket `assets` é privado; acesso via signed URLs no backend/edge, mas sem alterar fluxo existente que já funciona)
+- Contratos
+- Histórico financeiro (financeiro_transacoes)
+
+Critério de aceite Fase 3
+- Usuário BRAND vê apenas dados do seu brand (via brand_users).
+- Não vê modelos/contratos de outros brands.
+
+========================
+FASE 4 — Licensing Dashboard Profissional (/dashboard/licenses)
+========================
 Objetivo
-- Deixar o app pronto para produção (sem mocks e sem DataStore para fluxo crítico), corrigir o bloqueio “Start Forge”, e implementar a verificação de vazamento de senha via Have I Been Pwned (HIBP) no fluxo de cadastro (Sign Up), sem depender do plano Pro do Supabase.
+- Melhorar a experiência sem quebrar o que já existe.
 
-Estado atual (o que encontrei no código)
-1) Build está falhando por causa de script ausente no package.json real do repositório
-- O `package.json` que está no projeto (arquivo real que o build usa) NÃO tem `build:dev`.
-- Por isso o runner mostra: `Missing script: "build:dev"`.
-- Você colou um package.json onde existe `build:dev`, mas isso não está refletido no arquivo que o Lovable está buildando (ou houve divergência entre branches/commits).
-- Além disso, o package.json que você colou anteriormente tinha um erro de JSON (faltava vírgula). Mesmo que no GitHub esteja certo, precisamos garantir que o arquivo do projeto aqui também esteja certo.
+Implementação
+- Atualizar `/dashboard/licenses` para buscar dados reais do Supabase (se ainda existir qualquer dependência de store local).
+- Adicionar colunas/ações na lista:
+  - status visual (ativa/expirada)
+  - modelo vinculado
+  - botões: “Ver contrato”, “Ver assets liberados”, “Histórico de downloads”
 
-2) “Start Forge” está propositalmente bloqueado no UI
-- `components/models/model-table.tsx` tem:
-  - `handleStartForge()` com TODO
-  - mostra o toast: “Forge creation will be enabled once the forge pipeline is backed by Supabase.”
-- Ou seja, mesmo que a tabela `public.forges` exista, o UI ainda não cria nada.
+Downloads history
+- Como MVP, usar `audit_logs` para registrar `ASSET_DOWNLOADED` com metadata (license_id, asset_url/id).
+- Se precisar de maior granularidade, criar tabela `asset_downloads` (opcional) com RLS por license/client/brand.
 
-3) /dashboard/forges ainda usa DataStore (mock/in-memory)
-- `app/dashboard/forges/page.tsx` e `app/dashboard/forges/[id]/page.tsx` carregam forges via `lib/data-store.ts`.
-- Isso viola a regra “Supabase é a única fonte de verdade” e impede produção.
+Critério de aceite Fase 4
+- Licenses mostram status correto por data real (`valid_until`) e links funcionam.
 
-4) Cadastro (Sign Up) não existe hoje
-- Só existe página `/login` (`app/login/page.tsx`) e o AuthContext só implementa `login`.
-- Não existe `supabase.auth.signUp` em nenhum lugar do código atualmente.
-- Portanto, para aplicar a checagem de senha vazada, primeiro precisamos criar o fluxo de cadastro real.
+========================
+FASE 5 — Contract Visual System (/dashboard/contracts/[id])
+========================
+Rota nova
+- `/dashboard/contracts/[id]`
 
-5) Problema importante de conformidade: `src/integrations/supabase/types.ts` foi editado manualmente
-- O diff mostra alteração manual em `src/integrations/supabase/types.ts`.
-- Esse arquivo é “gerado automaticamente” e não deve ser editado. Isso pode quebrar o build e também conflitar com atualizações do Supabase.
-- Precisamos reverter essas alterações e voltar a depender da versão gerada.
+Exibir
+- Modelo, Marca, License vinculada, status signed
+- Botão: marcar como assinado (apenas admin/brand conforme sua regra)
+- Histórico financeiro ligado ao contrato
 
-Entregáveis (o que vou implementar)
-A) Unblock build (obrigatório para publicar)
-1) Você ajusta o `package.json` do projeto (o arquivo local aqui no Lovable)
-- Dentro de `"scripts"`, adicionar exatamente:
-  - `"build:dev": "vite build --mode development"`
-- Importante: manter JSON válido (com vírgulas corretas).
-- Resultado esperado: `npm run build:dev` aparece quando rodar `npm run`.
+Mudanças de Banco/RLS
+- Garantir que brand (e admin) possam:
+  - SELECT do contrato se ligado ao brand
+  - UPDATE `signed=true` com policy restrita (admin ou brand_owner)
+- Se necessário, registrar audit log “CONTRACT_SIGNED”.
 
-2) Confirmar que o `index.html` na raiz existe
-- Você já criou; vamos apenas validar que está no root (mesmo nível do package.json).
+Critério de aceite Fase 5
+- Botão “assinar” altera Supabase e reflete instantaneamente no UI.
 
-B) Implementar Sign Up + checkPasswordLeak (HIBP) antes do supabase.auth.signUp
-1) Criar utilitário `checkPasswordLeak(password: string)`
-- Local: `lib/check-password-leak.ts` (ou `lib/security/check-password-leak.ts`, seguindo padrões do projeto).
-- Implementação:
-  - Validar entrada (string, tamanho razoável 8–128, não logar senha).
-  - Gerar SHA-1 (k-anonymity) com Web Crypto:
-    - `crypto.subtle.digest('SHA-1', new TextEncoder().encode(password))`
-  - Converter hash em hex UPPERCASE.
-  - `prefix = hash.slice(0,5)` e `suffix = hash.slice(5)`.
-  - `fetch("https://api.pwnedpasswords.com/range/" + prefix)` (GET).
-    - Tratar rate-limit e falhas: se a API falhar, por segurança podemos:
-      - Opção “fail-closed” (bloqueia cadastro quando a API falha), ou
-      - Opção “fail-open” (permite cadastro, mas avisa que não foi possível verificar).
-    - Para produção, eu recomendaria “fail-closed” com mensagem clara, mas vou seguir a decisão que você preferir. (Se não decidir, implemento “fail-closed” porque você pediu “camada extra de segurança”.)
-  - Parse da resposta:
-    - Cada linha: `HASH_SUFFIX:COUNT`
-    - Comparar `HASH_SUFFIX` com `suffix` (case-insensitive).
-  - Retornar um objeto tipado, por exemplo:
-    - `{ leaked: true, count }` ou `{ leaked: false }`
-    - Em erro: `{ error: '...' }`
+========================
+FASE 6 — Audit Log Viewer (Admin) (/dashboard/audit)
+========================
+Rota existente já existe (`app/dashboard/audit/page.tsx`), mas implementar tabela real (se ainda não estiver).
+- UI: tabela com filtros (actor, action, table, date)
+- Fonte: `public.audit_logs` via Supabase
+- RLS já restringe leitura a admin (ok)
 
-2) Criar página de cadastro
-- Criar `app/signup/page.tsx` (client component) com UI consistente com `/login`.
-- Campos: email + password + confirm password (recomendado) e botão “Create account”.
-- Antes de chamar `supabase.auth.signUp`:
-  - Validar email/senha (usar as validações existentes em `lib/validation.ts` + zod opcional se já estiver no padrão).
-  - Chamar `checkPasswordLeak(password)`.
-  - Se `leaked === true`: bloquear e mostrar exatamente:
-    - “Esta senha apareceu em um vazamento de dados. Por segurança, escolha outra.”
-    - (toast e/ou texto vermelho abaixo do campo)
-  - Se estiver OK: chamar `supabase.auth.signUp`.
-    - Incluir `options.emailRedirectTo = window.location.origin + "/login"` (ou "/dashboard" dependendo do fluxo).
-- Após cadastro:
-  - Mostrar toast de sucesso e orientar sobre confirmação de email (se aplicável na config do Supabase).
+Critério de aceite Fase 6
+- Admin filtra e navega logs sem carregar dados indevidos.
 
-3) Atualizar `/login` para ter link “Criar conta”
-- Em `app/login/page.tsx`, adicionar link para `/signup`.
+========================
+FASE 7 — API FOUNDATION (/app/api/public)
+========================
+Objetivo
+- Preparar endpoints GET read-only protegidos por API KEY no header.
 
-4) (Opcional, recomendado) Adicionar `signup()` ao `lib/auth-context.tsx`
-- Padroniza o auth flow como no login.
-- Mantém a regra importante: não fazer Supabase calls dentro de `onAuthStateChange` callback (só via `setTimeout(0)` quando precisar).
-- Observação: seu `AuthContext` atualmente mapeia role via `profiles.role`, mas o requisito anterior do projeto era “roles via user_roles”. Isso precisa ser resolvido em paralelo para produção; vou manter isso como item explícito na seção “Produção / RBAC” abaixo.
+Implementação (Next.js Route Handlers)
+- Criar pasta `app/api/public/...`
+- Endpoints:
+  - GET `/api/models/:id`
+  - GET `/api/licenses/:id`
+- Proteção:
+  - Validar header `x-api-key` (ou `authorization: Bearer`) contra `process.env.PUBLIC_API_KEY`
+  - Retornar 401 se ausente/incorreto
+- Queries via Supabase server-side:
+  - Usar Supabase Service Role apenas se necessário; preferir anon + RLS se o endpoint tiver escopo público restrito.
+  - Como é “public foundation”, geralmente exige bypass de RLS para dados específicos. Se for o caso, usar service role e filtrar rigorosamente campos retornados.
 
-C) “Start Forge” realmente criar forja no Supabase e remover bloqueio
-1) Atualizar `components/models/model-table.tsx`
-- Substituir o toast “Forge creation will be enabled...” por:
-  - `insert` em `public.forges` com:
-    - `model_id = model.id`
-    - `created_by = user.id`
-    - `state = 'CREATED'`
-  - Inserir também um audit log real em `public.audit_logs` (se a tabela existir e tiver policy correta) com ação `FORGE_CREATED`.
-  - Redirecionar para `/dashboard/forges/[id]` do forge criado.
+Checklist de deploy
+- Você precisará definir `PUBLIC_API_KEY` como env var no Lovable (Project Settings) para funcionar em produção.
 
-2) Migrar páginas de Forges para Supabase (tirar DataStore do caminho crítico)
-- `app/dashboard/forges/page.tsx`
-  - Substituir `dataStore.getForges()` por query `supabase.from("forges").select(...)`.
-  - Carregar também dados mínimos do model relacionado (join) para exibir nome/identificador.
-- `app/dashboard/forges/[id]/page.tsx`
-  - Substituir `dataStore.getForge()` por query Supabase do forge por id + model relacionado.
-  - Para ações “Advance / Rollback”:
-    - Em vez de `dataStore.transitionForge`, fazer `update` no registro do forge com a próxima state (validando no client com `ForgeStateMachine`).
-    - Inserir audit log `FORGE_STATE_CHANGED` / `FORGE_ROLLBACK` no Supabase.
-  - Respeitar regras: “CERTIFIED = read-only”.
+Critério de aceite Fase 7
+- Chamadas sem header retornam 401.
+- Chamadas com header retornam JSON com dados reais.
 
-3) Ajustes mínimos necessários no banco/RLS (se ainda não estiverem ok)
-- Garantir que:
-  - Usuários com role model consigam ao menos ler seus próprios forges (policy já existe no migration que criou `public.forges`).
-  - Admin/Operator consigam gerenciar (policy já existe).
-  - Se faltar policy de INSERT para admin/operator ou para o usuário atual, adicionaremos.
-- Nota: seu migration atual define `created_by uuid NOT NULL` mas não define FK (ok), porém é fundamental que `created_by` seja sempre `auth.uid()` em inserts (no client).
-- Também precisamos verificar se existe trigger para `updated_at` (não existe hoje). Para produção, adicionaremos trigger para atualizar `updated_at` automaticamente.
+========================
+FASE 8 — Blockchain Certification (placeholder real)
+========================
+Mudanças de Banco
+- Adicionar `models.certificate_hash text` (nullable).
 
-D) Produção / RBAC e consistência (itens obrigatórios para “pronto para produção”)
-1) Remover dependência do DataStore em qualquer fluxo operacional
-- DataStore pode ficar apenas para componentes de demonstração (se houver), mas não para:
-  - models, forges, captures, previews, licenses, contracts, audit.
+UI
+- Botão em perfil do modelo: “Generate Certificate Hash”
 
-2) Reverter alteração manual de `src/integrations/supabase/types.ts`
-- Voltar o arquivo para o estado gerado e parar de editar manualmente.
-- Se precisarmos de tipos do table `forges`, geramos corretamente via Supabase (ou tratamos como `any` temporário com mapeamento local) até o types estar atualizado corretamente.
+Lógica
+- Gerar SHA-256 determinístico baseado em:
+  - model id
+  - lista de captures (ids + asset_url + status + created_at)
+  - previews (ids + preview_url + approved + created_at)
+  - licenses (ids + usage_type + valid_until + created_at)
+- Persistir `certificate_hash` no banco.
+- Registrar audit log “CERTIFICATE_HASH_GENERATED”.
 
-3) Eliminar uso de localStorage no Supabase client (conforme regra ATLAS)
-- Atualmente `src/integrations/supabase/client.ts` usa `window.localStorage` quando em browser.
-- Para ficar 100% alinhado com “Nunca usar localStorage”, vamos migrar o storage do supabase-js para cookies (ou storage in-memory) usando abordagem compatível com Next.
-- Observação: isso é uma mudança sensível e precisa ser feita com cuidado para não quebrar persistência de sessão. Eu colocarei isso como uma etapa dedicada e testada (ver “Testes end-to-end”).
+Critério de aceite Fase 8
+- Hash muda quando dados mudam; permanece igual para o mesmo conjunto de dados.
 
-4) Roles
-- Seu `AuthContext` ainda deriva role de `profiles.role`.
-- O requisito anterior do projeto era derivar roles de `public.user_roles` (fonte de autorização).
-- Para produção, vou refatorar:
-  - `AuthContext` carrega profile (identidade) e carrega roles (autorização) separadamente.
-  - `canAccessRoute` e `hasScope` passam a usar role computada a partir de `user_roles`.
+========================
+Riscos e cuidados (para não quebrar o que já funciona)
+- Não alterar Capture/Preview/License/Contract MVP existente além de “wiring” e novas telas.
+- RLS: sempre evitar recursão; usar funções SECURITY DEFINER quando policies precisarem de lookup (ex.: brand_users).
+- Não usar mocks, placeholders, nem localStorage.
+- Assets privados: sempre servir via Signed URL quando aplicável (bucket `assets`, `contracts`).
 
-Testes (obrigatórios para validar produção)
-1) Build/publish
-- Validar que o build não acusa mais “Missing script build:dev”.
-2) Auth
-- Fluxo de cadastro:
-  - Senha vazada (bloqueia e mostra mensagem exigida)
-  - Senha não vazada (cria usuário e segue o fluxo)
-  - Falha de API HIBP (comportamento conforme escolha fail-closed/fail-open)
-- Login e sessão
-3) Forge
-- Models → Start Forge cria linha real em `public.forges` e navega para o detalhe.
-- /dashboard/forges lista dados reais (sem DataStore).
-- /dashboard/forges/[id] atualiza state no Supabase e registra audit.
-4) RBAC/RLS
-- Model só vê seus forges.
-- Admin/Operator vê tudo.
-- Certificado não permite updates.
+Plano de execução sugerido (ordem exata)
+1) Fase 0 (build/publish) — aplicar e publicar para estabilizar
+2) Fase 1 (dashboard model profile)
+3) Fase 2 (/model)
+4) Fase 3 (/brand + brand role + brand_users + RLS)
+5) Fase 5 (contracts/[id]) — depende de vínculo brand_id no contract
+6) Fase 4 (upgrade licenses UI) — pode vir antes/depois, mas ideal após contracts UI existir
+7) Fase 6 (audit viewer admin)
+8) Fase 7 (API foundation)
+9) Fase 8 (certificate_hash)
 
-Dependências e sequência (para evitar retrabalho)
-1) Você corrige o `package.json` do projeto aqui (para desbloquear build)
-2) Eu implemento Sign Up + `checkPasswordLeak`
-3) Eu implemento Start Forge real + migração das páginas de Forges para Supabase
-4) Eu fecho os pontos de produção: reverter types gerados, remover DataStore crítico, remover localStorage do supabase client, e finalizar RBAC via user_roles
+Testes end-to-end obrigatórios após cada fase
+- Fase 0: Publish e abrir app
+- Fase 1-2: login como model; ver/editar city/phone; conferir métricas batem com Supabase
+- Fase 3: login como brand; confirmar isolamento total por brand_users
+- Fase 4-5: criar/visualizar contratos e licenças; “signed” só para roles autorizadas
+- Fase 6: admin filtra audit
+- Fase 7: curl com/sem x-api-key
+- Fase 8: gerar hash e verificar persistência
 
-Decisões que preciso confirmar (rápidas, para não travar)
-- Em caso de falha da API do HIBP:
-  - (A) Bloquear o cadastro por segurança (fail-closed), ou
-  - (B) Permitir o cadastro, mas avisar que não foi possível checar (fail-open).
+O que vou precisar de você durante a implementação (inputs mínimos)
+- 1) Confirmação de nomes de header do API KEY (prefere `x-api-key` ou `authorization: Bearer`) — eu sugeriria `x-api-key`.
+- 2) Um usuário de teste BRAND (email) e qual brand ele deve representar (para eu validar o fluxo end-to-end após criar brand_users).
