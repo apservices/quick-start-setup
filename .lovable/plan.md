@@ -1,154 +1,163 @@
 
-Context recap (what’s happening)
-- Your publish/build is failing right now for a non-code reason: the project is missing the required npm script `build:dev` (and also needs a root `index.html` for Lovable’s build runner). Until those are added, “Publishing failed” will keep happening regardless of pipeline/auth fixes.
-- In the app itself, there’s a large split-brain situation:
-  - Some pages use Supabase tables (e.g., `app/dashboard/models/page.tsx`).
-  - Many critical pipeline screens still use the in-memory `lib/data-store.ts` (for “forges”, capture assets, audit logs, etc.), which is the opposite of “Supabase as workflow engine”.
+Objetivo
+- Deixar o app pronto para produção (sem mocks e sem DataStore para fluxo crítico), corrigir o bloqueio “Start Forge”, e implementar a verificação de vazamento de senha via Have I Been Pwned (HIBP) no fluxo de cadastro (Sign Up), sem depender do plano Pro do Supabase.
 
-Non‑negotiable security constraint (must override the earlier request)
-- We cannot use `profiles.role` as the authorization source of truth. Roles must come from a dedicated roles table (your selection: `public.user_roles`).
-- We can still keep `profiles` for “identity/profile” data (full_name, city, etc.), but authorization must be derived from `user_roles`.
+Estado atual (o que encontrei no código)
+1) Build está falhando por causa de script ausente no package.json real do repositório
+- O `package.json` que está no projeto (arquivo real que o build usa) NÃO tem `build:dev`.
+- Por isso o runner mostra: `Missing script: "build:dev"`.
+- Você colou um package.json onde existe `build:dev`, mas isso não está refletido no arquivo que o Lovable está buildando (ou houve divergência entre branches/commits).
+- Além disso, o package.json que você colou anteriormente tinha um erro de JSON (faltava vírgula). Mesmo que no GitHub esteja certo, precisamos garantir que o arquivo do projeto aqui também esteja certo.
 
-Phase 0 — Unblock publishing (you will do this now)
-1) Add script in `package.json`:
-   - Add:
-     - `"build:dev": "vite build --mode development"`
-   - Keep the existing scripts.
+2) “Start Forge” está propositalmente bloqueado no UI
+- `components/models/model-table.tsx` tem:
+  - `handleStartForge()` com TODO
+  - mostra o toast: “Forge creation will be enabled once the forge pipeline is backed by Supabase.”
+- Ou seja, mesmo que a tabela `public.forges` exista, o UI ainda não cria nada.
 
-2) Create a root `index.html` at project root (same level as package.json)
-   - Minimal placeholder is fine (Lovable needs it to initialize builds).
+3) /dashboard/forges ainda usa DataStore (mock/in-memory)
+- `app/dashboard/forges/page.tsx` e `app/dashboard/forges/[id]/page.tsx` carregam forges via `lib/data-store.ts`.
+- Isso viola a regra “Supabase é a única fonte de verdade” e impede produção.
 
-3) Retry Publish
-   - If it still fails, we’ll read build logs/console logs and address the next blocker.
+4) Cadastro (Sign Up) não existe hoje
+- Só existe página `/login` (`app/login/page.tsx`) e o AuthContext só implementa `login`.
+- Não existe `supabase.auth.signUp` em nenhum lugar do código atualmente.
+- Portanto, para aplicar a checagem de senha vazada, primeiro precisamos criar o fluxo de cadastro real.
 
-Phase 1 — AUTH & PROFILE: make Supabase explicit and deterministic
-Goal
-- After every login/session restore: verify user via `supabase.auth.getUser()`, ensure profile row exists (no triggers assumed), then load roles from `user_roles`, store both in app state, and only then render protected routes.
+5) Problema importante de conformidade: `src/integrations/supabase/types.ts` foi editado manualmente
+- O diff mostra alteração manual em `src/integrations/supabase/types.ts`.
+- Esse arquivo é “gerado automaticamente” e não deve ser editado. Isso pode quebrar o build e também conflitar com atualizações do Supabase.
+- Precisamos reverter essas alterações e voltar a depender da versão gerada.
 
-Current state (what exists)
-- `lib/profile-provisioning.ts` already:
-  - calls `supabase.auth.getUser()`
-  - reads profile with `.single()`
-  - inserts profile if missing
-  - re-fetches profile
-- `lib/auth-context.tsx` already defers provisioning in `onAuthStateChange` using `setTimeout(0)` (good, avoids deadlocks).
+Entregáveis (o que vou implementar)
+A) Unblock build (obrigatório para publicar)
+1) Você ajusta o `package.json` do projeto (o arquivo local aqui no Lovable)
+- Dentro de `"scripts"`, adicionar exatamente:
+  - `"build:dev": "vite build --mode development"`
+- Importante: manter JSON válido (com vírgulas corretas).
+- Resultado esperado: `npm run build:dev` aparece quando rodar `npm run`.
 
-What we will change
-A) Split “profile” and “role” in state:
-- Keep the “ensure profile exists” behavior, but treat profile.role as non-authoritative (can even stop selecting it).
-- Add a “load roles” step from `public.user_roles` and map to app role with deterministic precedence:
-  - admin > model > client > viewer
+2) Confirmar que o `index.html` na raiz existe
+- Você já criou; vamos apenas validar que está no root (mesmo nível do package.json).
 
-B) Update AuthContext to store:
-- session (already)
-- user profile fields (id, email, name/full_name)
-- computed role (from user_roles only)
+B) Implementar Sign Up + checkPasswordLeak (HIBP) antes do supabase.auth.signUp
+1) Criar utilitário `checkPasswordLeak(password: string)`
+- Local: `lib/check-password-leak.ts` (ou `lib/security/check-password-leak.ts`, seguindo padrões do projeto).
+- Implementação:
+  - Validar entrada (string, tamanho razoável 8–128, não logar senha).
+  - Gerar SHA-1 (k-anonymity) com Web Crypto:
+    - `crypto.subtle.digest('SHA-1', new TextEncoder().encode(password))`
+  - Converter hash em hex UPPERCASE.
+  - `prefix = hash.slice(0,5)` e `suffix = hash.slice(5)`.
+  - `fetch("https://api.pwnedpasswords.com/range/" + prefix)` (GET).
+    - Tratar rate-limit e falhas: se a API falhar, por segurança podemos:
+      - Opção “fail-closed” (bloqueia cadastro quando a API falha), ou
+      - Opção “fail-open” (permite cadastro, mas avisa que não foi possível verificar).
+    - Para produção, eu recomendaria “fail-closed” com mensagem clara, mas vou seguir a decisão que você preferir. (Se não decidir, implemento “fail-closed” porque você pediu “camada extra de segurança”.)
+  - Parse da resposta:
+    - Cada linha: `HASH_SUFFIX:COUNT`
+    - Comparar `HASH_SUFFIX` com `suffix` (case-insensitive).
+  - Retornar um objeto tipado, por exemplo:
+    - `{ leaked: true, count }` ou `{ leaked: false }`
+    - Em erro: `{ error: '...' }`
 
-C) Route guards:
-- `app/dashboard/layout.tsx` already blocks on `isLoading`; we’ll ensure `isLoading` remains true until:
-  - getUser() succeeded
-  - profile ensured
-  - role loaded
-- Then `canAccessRoute` uses the computed role.
+2) Criar página de cadastro
+- Criar `app/signup/page.tsx` (client component) com UI consistente com `/login`.
+- Campos: email + password + confirm password (recomendado) e botão “Create account”.
+- Antes de chamar `supabase.auth.signUp`:
+  - Validar email/senha (usar as validações existentes em `lib/validation.ts` + zod opcional se já estiver no padrão).
+  - Chamar `checkPasswordLeak(password)`.
+  - Se `leaked === true`: bloquear e mostrar exatamente:
+    - “Esta senha apareceu em um vazamento de dados. Por segurança, escolha outra.”
+    - (toast e/ou texto vermelho abaixo do campo)
+  - Se estiver OK: chamar `supabase.auth.signUp`.
+    - Incluir `options.emailRedirectTo = window.location.origin + "/login"` (ou "/dashboard" dependendo do fluxo).
+- Após cadastro:
+  - Mostrar toast de sucesso e orientar sobre confirmação de email (se aplicável na config do Supabase).
 
-Supabase/RLS work needed (schema & policies)
-- Confirm `public.user_roles` has RLS enabled; if enabled, currently it has no policies listed.
-- Add policies so:
-  - Admin can manage roles
-  - Users can read only their own roles (or alternatively no direct read and use a SECURITY DEFINER RPC like `get_my_roles()`).
-- Avoid recursion by using existing `public.has_role()` (already present in your DB functions list).
+3) Atualizar `/login` para ter link “Criar conta”
+- Em `app/login/page.tsx`, adicionar link para `/signup`.
 
-Phase 2 — MODEL PIPELINE: “model” users must have a `public.models` row (created by app)
-Goal
-- When a model user first enters the model portal: ensure `models.user_id = auth.uid()` exists; if not, create it from profile.
+4) (Opcional, recomendado) Adicionar `signup()` ao `lib/auth-context.tsx`
+- Padroniza o auth flow como no login.
+- Mantém a regra importante: não fazer Supabase calls dentro de `onAuthStateChange` callback (só via `setTimeout(0)` quando precisar).
+- Observação: seu `AuthContext` atualmente mapeia role via `profiles.role`, mas o requisito anterior do projeto era “roles via user_roles”. Isso precisa ser resolvido em paralelo para produção; vou manter isso como item explícito na seção “Produção / RBAC” abaixo.
 
-Current risk found in schema/policies
-- `public.models.user_id` is nullable.
-- RLS policies shown for `models`:
-  - admin manages models
-  - model reads own model (SELECT)
-  - There is no INSERT policy for models to create their own row.
-=> Result: the “ensure model row exists” flow cannot work until we add a safe INSERT policy (or route through an Edge Function).
+C) “Start Forge” realmente criar forja no Supabase e remover bloqueio
+1) Atualizar `components/models/model-table.tsx`
+- Substituir o toast “Forge creation will be enabled...” por:
+  - `insert` em `public.forges` com:
+    - `model_id = model.id`
+    - `created_by = user.id`
+    - `state = 'CREATED'`
+  - Inserir também um audit log real em `public.audit_logs` (se a tabela existir e tiver policy correta) com ação `FORGE_CREATED`.
+  - Redirecionar para `/dashboard/forges/[id]` do forge criado.
 
-What we will implement
-A) A client helper/hook (e.g., `ensureModelRowForCurrentUser()`) called when model users enter the model portal:
-- Query models by `user_id = auth.uid()` using `.maybeSingle()` to avoid hard failures when missing.
-- If missing: insert `full_name`, `email`, `city` from `profiles` and set `status = 'pending'` and `user_id = auth.uid()`.
+2) Migrar páginas de Forges para Supabase (tirar DataStore do caminho crítico)
+- `app/dashboard/forges/page.tsx`
+  - Substituir `dataStore.getForges()` por query `supabase.from("forges").select(...)`.
+  - Carregar também dados mínimos do model relacionado (join) para exibir nome/identificador.
+- `app/dashboard/forges/[id]/page.tsx`
+  - Substituir `dataStore.getForge()` por query Supabase do forge por id + model relacionado.
+  - Para ações “Advance / Rollback”:
+    - Em vez de `dataStore.transitionForge`, fazer `update` no registro do forge com a próxima state (validando no client com `ForgeStateMachine`).
+    - Inserir audit log `FORGE_STATE_CHANGED` / `FORGE_ROLLBACK` no Supabase.
+  - Respeitar regras: “CERTIFIED = read-only”.
 
-B) RLS changes needed on `models`:
-- Add “model inserts own model row” policy:
-  - WITH CHECK (user_id = auth.uid())
-- Consider making `models.user_id` NOT NULL and UNIQUE (1 model record per auth user) to enforce the “models is the root” rule cleanly.
-  - If we make it NOT NULL, we must also migrate existing rows (set user_id or decide how to handle legacy/admin-created rows). This will be handled carefully and only after checking Live data if publishing.
+3) Ajustes mínimos necessários no banco/RLS (se ainda não estiverem ok)
+- Garantir que:
+  - Usuários com role model consigam ao menos ler seus próprios forges (policy já existe no migration que criou `public.forges`).
+  - Admin/Operator consigam gerenciar (policy já existe).
+  - Se faltar policy de INSERT para admin/operator ou para o usuário atual, adicionaremos.
+- Nota: seu migration atual define `created_by uuid NOT NULL` mas não define FK (ok), porém é fundamental que `created_by` seja sempre `auth.uid()` em inserts (no client).
+- Também precisamos verificar se existe trigger para `updated_at` (não existe hoje). Para produção, adicionaremos trigger para atualizar `updated_at` automaticamente.
 
-C) Status evolution:
-- Enforce that only admins can change `models.status` (pending/approved/certified).
-- Because Postgres RLS can’t restrict updates by column, we’ll do one of:
-  1) Create an admin-only RPC to update status, and do not grant UPDATE to models at all, OR
-  2) Split mutable “model-editable” fields into a separate table (e.g., model_profiles) and keep `models.status` admin-only.
-- We’ll choose (1) initially to keep changes minimal.
+D) Produção / RBAC e consistência (itens obrigatórios para “pronto para produção”)
+1) Remover dependência do DataStore em qualquer fluxo operacional
+- DataStore pode ficar apenas para componentes de demonstração (se houver), mas não para:
+  - models, forges, captures, previews, licenses, contracts, audit.
 
-Phase 3 — CAPTURE: upload to Storage, insert into `public.captures`
-Goal
-- Replace the in-memory `dataStore.addCaptureAsset(...)` that currently stores base64 `fileUrl` with:
-  1) Convert capture frame to Blob
-  2) Upload to Supabase Storage bucket `captures`
-  3) Store URL/path in `captures.asset_url`, status='pending', and correct `model_id`
+2) Reverter alteração manual de `src/integrations/supabase/types.ts`
+- Voltar o arquivo para o estado gerado e parar de editar manualmente.
+- Se precisarmos de tipos do table `forges`, geramos corretamente via Supabase (ou tratamos como `any` temporário com mapeamento local) até o types estar atualizado corretamente.
 
-Code areas to change
-- `components/capture/guided-capture-interface.tsx`
-  - Replace base64 persistence with upload logic
-  - After upload, insert into `public.captures`
-- Any other capture components that use `dataStore` for capture assets.
+3) Eliminar uso de localStorage no Supabase client (conforme regra ATLAS)
+- Atualmente `src/integrations/supabase/client.ts` usa `window.localStorage` quando em browser.
+- Para ficar 100% alinhado com “Nunca usar localStorage”, vamos migrar o storage do supabase-js para cookies (ou storage in-memory) usando abordagem compatível com Next.
+- Observação: isso é uma mudança sensível e precisa ser feita com cuidado para não quebrar persistência de sessão. Eu colocarei isso como uma etapa dedicada e testada (ver “Testes end-to-end”).
 
-Storage rules
-- We will not store images in the database (no base64 in tables).
-- We’ll store only the storage URL/path in `captures.asset_url`.
+4) Roles
+- Seu `AuthContext` ainda deriva role de `profiles.role`.
+- O requisito anterior do projeto era derivar roles de `public.user_roles` (fonte de autorização).
+- Para produção, vou refatorar:
+  - `AuthContext` carrega profile (identidade) e carrega roles (autorização) separadamente.
+  - `canAccessRoute` e `hasScope` passam a usar role computada a partir de `user_roles`.
 
-RLS dependencies
-- `captures` INSERT policy requires the `model_id` to be a model row linked to auth user:
-  - Therefore Phase 2 must be in place (ensure model row exists) before capture inserts will work reliably.
+Testes (obrigatórios para validar produção)
+1) Build/publish
+- Validar que o build não acusa mais “Missing script build:dev”.
+2) Auth
+- Fluxo de cadastro:
+  - Senha vazada (bloqueia e mostra mensagem exigida)
+  - Senha não vazada (cria usuário e segue o fluxo)
+  - Falha de API HIBP (comportamento conforme escolha fail-closed/fail-open)
+- Login e sessão
+3) Forge
+- Models → Start Forge cria linha real em `public.forges` e navega para o detalhe.
+- /dashboard/forges lista dados reais (sem DataStore).
+- /dashboard/forges/[id] atualiza state no Supabase e registra audit.
+4) RBAC/RLS
+- Model só vê seus forges.
+- Admin/Operator vê tudo.
+- Certificado não permite updates.
 
-Phase 4 — PREVIEW: admin reviews pending captures → insert previews → update capture status
-Goal
-- Build/adjust an Admin Review screen that:
-  - Lists `captures` where status='pending'
-  - For each capture: create a `previews` row (capture_id, preview_url, approved)
-  - If approved: update capture status -> 'approved'
+Dependências e sequência (para evitar retrabalho)
+1) Você corrige o `package.json` do projeto aqui (para desbloquear build)
+2) Eu implemento Sign Up + `checkPasswordLeak`
+3) Eu implemento Start Forge real + migração das páginas de Forges para Supabase
+4) Eu fecho os pontos de produção: reverter types gerados, remover DataStore crítico, remover localStorage do supabase client, e finalizar RBAC via user_roles
 
-Code areas likely to update
-- `app/dashboard/validation/page.tsx` or `app/dashboard/audit/page.tsx` (depending on where review should live)
-- Any existing “capture viewer” pages currently reading from `dataStore` (e.g., `app/dashboard/capture-viewer/page.tsx`).
-
-DB/RLS considerations
-- `previews` is admin-managed already per policies.
-- `captures` updates currently only admin manages (per policies), which matches the requirement.
-
-Phase 5 — Remove/retire the in-memory DataStore for pipeline-critical paths
-Goal
-- Stop using `lib/data-store.ts` for operational pipeline state.
-- Keep it only if needed for demo-only UI, but not for any route used in production workflows.
-
-Approach
-- Identify all routes/components importing `dataStore` (we found many matches).
-- For each, decide:
-  - Replace with Supabase queries + subscriptions (where applicable), or
-  - Remove features that are purely demo artifacts if they conflict with the real pipeline.
-
-Phased migration agreement (your selection)
-- We will migrate in this order:
-  1) Auth + roles from `user_roles`
-  2) Ensure models row exists for model users
-  3) Capture upload to Storage + captures insert
-  4) Admin review -> previews + capture status updates
-  5) Then expand to Jobs/Applications, Licenses/Contracts/Financeiro
-
-What I need from you (sequencing)
-1) You add `build:dev` + root `index.html` now, then retry Publish.
-2) If Publish still fails, share the new build log snippet (the first error line is enough).
-3) Then I’ll implement Phase 1–2 changes first (auth roles + ensure model row), because Captures depends on Models.
-
-Technical notes (for reviewers)
-- Use `.maybeSingle()` for existence checks (models row), but `.single()` is fine for required reads after insert.
-- Avoid Supabase calls inside `onAuthStateChange` callback; keep `setTimeout(0)` pattern already present.
-- Ensure `user_roles` policies do not cause recursion; use existing security definer helpers where needed.
+Decisões que preciso confirmar (rápidas, para não travar)
+- Em caso de falha da API do HIBP:
+  - (A) Bloquear o cadastro por segurança (fail-closed), ou
+  - (B) Permitir o cadastro, mas avisar que não foi possível checar (fail-open).
