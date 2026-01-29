@@ -2,28 +2,32 @@
 
 import type React from "react"
 
-import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import Image from "next/image"
-import { useAuth } from "@/lib/auth-context"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
+
 import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { useAuth } from "@/lib/auth-context"
+import { validateEmail, validatePassword, sanitizeEmail } from "@/lib/validation"
+import { checkPasswordLeak } from "@/lib/check-password-leak"
+import { supabase } from "@/src/integrations/supabase/client"
 import { AlertCircle, Loader2, Lock } from "lucide-react"
-import { toast } from "sonner"
-import { isProduction } from "@/lib/config"
 
-export default function LoginPage() {
+export default function SignupPage() {
   const router = useRouter()
-  const { login, isLoading, user } = useAuth()
+  const { user, isLoading } = useAuth()
+
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
   const [error, setError] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Redirect if already logged in
   useEffect(() => {
     if (user && !isLoading) {
       router.push("/dashboard")
@@ -36,22 +40,60 @@ export default function LoginPage() {
     setIsSubmitting(true)
 
     try {
-      const result = await login(email, password)
-
-      if (result.success) {
-        toast.success("Welcome to ATLAS™")
-        router.push("/dashboard")
-      } else {
-        setError(result.error || "Authentication failed")
+      const emailValidation = validateEmail(email)
+      if (!emailValidation.valid) {
+        setError(emailValidation.error || "Invalid email")
+        return
       }
+
+      const passwordValidation = validatePassword(password)
+      if (!passwordValidation.valid) {
+        setError(passwordValidation.error || "Invalid password")
+        return
+      }
+
+      if (password !== confirmPassword) {
+        setError("Passwords do not match")
+        return
+      }
+
+      // Extra security: check password leak (HIBP k-anonymity)
+      const leakCheck = await checkPasswordLeak(password)
+      if (leakCheck.ok && leakCheck.leaked) {
+        const msg = "Esta senha apareceu em um vazamento de dados. Por segurança, escolha outra."
+        setError(msg)
+        toast.error(msg)
+        return
+      }
+      if (!leakCheck.ok) {
+        // Fail-open (permitir) conforme escolhido: segue o cadastro, mas avisa.
+        toast.warning("Não foi possível verificar se a senha já vazou. Prosseguindo com o cadastro.")
+      }
+
+      const sanitizedEmail = sanitizeEmail(email)
+      const redirectUrl = `${window.location.origin}/login`
+
+      const { error: signUpError } = await supabase.auth.signUp({
+        email: sanitizedEmail,
+        password,
+        options: {
+          emailRedirectTo: redirectUrl,
+        },
+      })
+
+      if (signUpError) {
+        setError(signUpError.message)
+        return
+      }
+
+      toast.success("Conta criada. Verifique seu email para confirmar (se habilitado).")
+      router.push("/login")
     } catch {
       setError("An unexpected error occurred. Please try again.")
     } finally {
       setIsSubmitting(false)
     }
   }
-
-  const productionMode = isProduction()
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
@@ -66,8 +108,8 @@ export default function LoginPage() {
 
         <Card className="border-border bg-card">
           <CardHeader>
-            <CardTitle className="text-foreground">Sign In</CardTitle>
-            <CardDescription>Enter your credentials to access the platform</CardDescription>
+            <CardTitle className="text-foreground">Sign Up</CardTitle>
+            <CardDescription>Crie sua conta com uma senha segura</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -108,7 +150,24 @@ export default function LoginPage() {
                   required
                   disabled={isSubmitting}
                   className="bg-input border-border"
-                  autoComplete="current-password"
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="confirmPassword" className="text-foreground">
+                  Confirm Password
+                </Label>
+                <Input
+                  id="confirmPassword"
+                  type="password"
+                  placeholder="••••••••"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                  disabled={isSubmitting}
+                  className="bg-input border-border"
+                  autoComplete="new-password"
                 />
               </div>
 
@@ -120,21 +179,19 @@ export default function LoginPage() {
                 {isSubmitting ? (
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Authenticating...
+                    Creating account...
                   </>
                 ) : (
-                  "Sign In"
+                  "Create account"
                 )}
               </Button>
             </form>
-
-            {/* Demo credentials removed: authentication is handled by Supabase Auth. */}
           </CardContent>
         </Card>
 
         <div className="text-center mt-4">
-          <Link href="/signup" className="text-sm text-primary hover:underline">
-            Criar conta
+          <Link href="/login" className="text-sm text-primary hover:underline">
+            Já tem conta? Entrar
           </Link>
         </div>
 
