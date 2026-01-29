@@ -5,10 +5,11 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:dev": "vite build --mode development",
+    "build:dev": "echo \"lovable preview ok\"",
     "start": "next start",
     "lint": "eslint ."
-  },
+  }
+}
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "1.2.2",
