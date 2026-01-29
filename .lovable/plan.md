@@ -1,115 +1,127 @@
 
-Goal
-- Stop relying on database triggers (e.g., public.handle_new_user) to create profiles.
-- After every successful Supabase login/session restore, the app must ensure a row exists in public.profiles for auth.user.id.
-- Use public.profiles.role as the single source of truth for all in-app permissions/route guards/admin checks.
-- Default role for first-time users: viewer (restricted).
+Objective
+- Fix persistent login failures by guaranteeing a `public.profiles` row exists immediately after every successful Supabase login AND every session restore.
+- Ensure the app does not assume any database trigger (e.g. `handle_new_user`) exists or runs.
+- Unblock Lovable builds by adding the required `build:dev` script and a root `index.html` (you confirmed you’ll do these manually).
 
-Key findings in current codebase
-- lib/auth-context.tsx currently derives role from public.user_roles and auto-inserts “model” into user_roles on login.
-- Database currently contains a public.handle_new_user() function (and previously there were migrations adjusting it), but there is no guarantee a trigger is active. Regardless, the app must not depend on it.
-- public.profiles currently has SELECT policies only (self/admin) and no INSERT policy, meaning the app cannot create profiles under RLS today.
-- Route guards use user.role from AuthContext via canAccessRoute() in lib/rbac.ts.
+Important security note (must be explicit)
+- Storing authorization roles in `profiles.role` can be made to work only if users can never update that field (no self-update policy, no client-side write path). Any future “profile update” feature that accidentally allows updating `role` becomes a privilege escalation risk.
+- If you still want to proceed with `profiles.role` as the app’s role source of truth (you confirmed you do), we will keep `public.profiles` UPDATE locked down (no UPDATE policy for authenticated users), and we will not add any app code path that updates `profiles.role`.
 
-Important build blockers to fix (Lovable build)
-1) package.json is missing a build:dev script (Lovable requires it)
-- You must add:
-  - "build:dev": "vite build --mode development"
-  in package.json -> scripts.
-2) Project is missing index.html (Lovable requires it)
-- You must create an index.html at the project root.
-- Note: This repo is a Next.js App Router app; adding index.html/vite build is only to satisfy Lovable’s build requirements (it won’t be used by Next.js in real deployments). If you want, we can keep index.html minimal and non-invasive (static placeholder).
+Current state (what I found)
+- `lib/auth-context.tsx` already has `ensureProfileExists()` using:
+  - `select ... maybeSingle()` from `profiles`
+  - `insert { id, role: "viewer", full_name }` if missing
+  - re-fetch after insert
+- Despite that, login is still failing per your report, and you’ve requested a very specific flow using `supabase.auth.getUser()` and `.single()`.
 
-What will change (high level)
-A) Database (Supabase) changes
-- Add the minimal RLS permissions required for the app to “ensure profile exists”:
-  - Allow authenticated users to SELECT their own profile (already exists).
-  - Add authenticated INSERT policy for public.profiles (id must equal auth.uid()) so the app can create the row.
-  - Optionally add authenticated UPDATE policy for users to update their own full_name/city later (not required by your request, but commonly needed; can be deferred if you want minimal scope).
-- Remove/retire trigger dependency:
-  - Drop any trigger on auth.users that calls handle_new_user (if present).
-  - Optionally drop the public.handle_new_user() function (or leave it unused). Your requirement says “remove dependency”; dropping it reduces confusion.
-- Align “admin checks” in RLS (if you want DB policies to also use profiles.role):
-  - Create a SECURITY DEFINER helper function like public.has_profile_role(_user_id uuid, _role text) that checks public.profiles.role safely with a fixed search_path.
-  - Update existing “admin manages …” policies that currently use public.has_role()/user_roles to instead use profiles.role (directly or via the helper).
-  - Special care: policies on public.profiles itself should not self-query without a security definer helper (to avoid recursion). Using a SECURITY DEFINER helper is the safe approach.
+Why it’s likely still failing
+- The most common causes in this situation:
+  1) `supabase.auth.getUser()` is not being called, so the app may be provisioning using a session object that isn’t fully verified yet (rare, but possible in edge cases).
+  2) The `profiles` read returns “no rows” and `.single()` throws, and the code path treats it as a fatal error instead of “profile missing”.
+  3) RLS INSERT on `profiles` is still blocking profile creation for some users (policy mismatch or missing `to authenticated` scope).
+  4) The UI renders protected routes before profile provisioning finishes (race), causing route guards to run with `user=null` or missing role.
 
-B) App changes (Next.js / React)
-- Update lib/auth-context.tsx:
-  - Remove all user_roles logic (ensureDefaultRole, querying user_roles).
-  - After auth succeeds (both signInWithPassword and onAuthStateChange / getSession restore), run:
-    1) const userId = session.user.id; const email = session.user.email
-    2) SELECT * FROM public.profiles WHERE id = userId (use .maybeSingle())
-    3) If no row: INSERT (id, role, full_name) values (userId, 'viewer', email)
-    4) Re-fetch (or use inserted row) and set app user.role based on profiles.role
-  - Keep the existing “defer extra Supabase calls with setTimeout(0)” pattern inside onAuthStateChange to avoid deadlocks.
-  - Add defensive handling:
-    - If profile insert fails due to RLS/misconfig, surface a clear error (toast + log via systemLogger) and treat the session as authenticated-but-unprovisioned (optionally force logout or show “Account not provisioned” screen).
-- Update lib/types.ts and lib/rbac.ts to support the new role model:
-  - Add VIEWER to the frontend UserRole union (since viewer is now a real state).
-  - Map profiles.role strings to UserRole:
-    - 'admin' -> ADMIN
-    - 'model' -> MODEL
-    - 'client' -> CLIENT
-    - 'viewer' (or anything unknown) -> VIEWER
-  - Update PERMISSIONS / canAccessRoute so VIEWER is restricted (per your requirement):
-    - Define exactly which routes VIEWER can access (recommend: allow /dashboard only, and show a “pending access” / “contact admin” message; or redirect them to a dedicated restricted page).
-  - Ensure DashboardLayout still redirects unauthenticated users to /login, but “authenticated viewer” users remain logged in and simply see access denied for protected sections.
+Implementation plan (code + verification)
 
-Sequencing / steps to implement
-1) Fix Lovable build requirements (user action required)
-- Add build:dev script to package.json:
-  - "build:dev": "vite build --mode development"
-- Create root index.html (minimal placeholder).
-  - This is purely to satisfy Lovable’s build pipeline.
+A) You (manual) — fix build blockers so Lovable can run builds
+1) Add a `build:dev` script to `package.json`
+- In `scripts`, add:
+  - `"build:dev": "vite build --mode development"`
+- This is required by Lovable’s build system even if your real app deploy uses Next.js.
 
-2) Database migration (we will implement after you approve in default mode)
-- public.profiles:
-  - Add INSERT policy for authenticated users to create their own profile row:
-    - WITH CHECK (id = auth.uid())
-  - (Optional) Add UPDATE policy for authenticated users to update their own profile:
-    - USING (id = auth.uid()) WITH CHECK (id = auth.uid())
-- Add SECURITY DEFINER function:
-  - public.has_profile_role(_user_id uuid, _role text) returns boolean
-  - SECURITY DEFINER, STABLE, SET search_path = public
-  - Implementation: select exists(select 1 from public.profiles where id=_user_id and role=_role)
-- Update “admin manage” RLS policies across tables to use profiles.role (via has_profile_role) instead of user_roles-based has_role.
-- Remove trigger dependency:
-  - Drop trigger on auth.users if it exists (we’ll check system catalogs during migration).
-  - Optionally DROP FUNCTION public.handle_new_user().
+2) Create a root `index.html`
+- Create `index.html` at the repository root (same level as `package.json`).
+- Minimal placeholder is fine; it only needs to exist for Lovable initialization.
 
-3) App code updates (we will implement after DB is ready)
-- lib/auth-context.tsx:
-  - Replace buildUserFromSession() to fetch/ensure profile then build the User object from profile.role.
-  - Remove ensureDefaultRole() and all user_roles queries/inserts.
-  - Use .maybeSingle() for profile lookup to avoid “single row” errors.
-  - Ensure calls are deferred from onAuthStateChange callback with setTimeout(0).
+B) App: implement your exact “getUser + single + insert + re-fetch” provisioning flow
+Target file:
+- `lib/auth-context.tsx`
 
-4) Update role + routing logic
-- lib/types.ts:
-  - Add "VIEWER" to UserRole.
-- lib/rbac.ts:
-  - Add VIEWER to permission maps and route guard logic.
-  - Ensure route checks align with your new valid roles: admin/model/client + viewer as restricted default.
+What we will change
+1) Centralize provisioning into a single function that uses getUser()
+- Add a helper like `provisionProfileFromAuth()` that:
+  - Calls: `const { data: { user }, error } = await supabase.auth.getUser()`
+  - If `user` is null or error exists: treat as not authenticated (clear state).
+  - Extract `user.id` and `user.email`.
 
-5) Verification checklist (end-to-end)
-- Sign in with an existing user that already has a profile:
-  - Ensure role comes from profiles.role and no user_roles calls happen.
-- Sign in with a brand-new user (no profile row):
-  - App creates public.profiles row (role='viewer', full_name=email).
-  - User stays logged in and sees restricted access behavior.
-- Refresh the page:
-  - Session restores; app again ensures profile exists; no reliance on triggers.
-- Confirm route guard behavior:
-  - admin/model/client get expected access; viewer is restricted.
+2) Profile fetch using `.single()` with “not found” handling
+- Implement:
+  - `const { data: profile, error: profileError } = await supabase.from("profiles").select("id, role, full_name").eq("id", user.id).single()`
+- If `profileError` indicates “no rows found” (Supabase/PostgREST commonly uses code like `PGRST116`), we treat it as “profile missing” (not a fatal error) and proceed to insert.
+- If `profileError` is something else (RLS denied, network, schema mismatch), we surface a clear error and stop (so it’s diagnosable rather than silently failing).
 
-Technical notes / edge cases
-- If RLS on profiles is strict and INSERT is not allowed, the app cannot create the row; that’s why the INSERT policy is required.
-- If you later want “admin upgrades viewer to model/client”, we’ll need an admin-only UPDATE policy on profiles.role (using has_profile_role(auth.uid(),'admin')) and a simple admin UI.
-- Using profiles.role as the single source of truth is workable, but it means profiles.role becomes security-sensitive; RLS must prevent users from changing their own role unless they are admin.
-  - Therefore: do not add a “self update role” policy, ever.
+3) Insert profile when missing
+- Run:
+  - `await supabase.from("profiles").insert({ id: user.id, role: "viewer", full_name: user.email })`
+- If insert fails due to RLS:
+  - Log via `systemLogger`
+  - Optionally force logout or show a dedicated “Account provisioning failed” state (to prevent infinite redirect loops).
 
-Scope guardrails (no extra refactors)
-- I will only change auth provisioning logic, role derivation, route guards, and the minimal RLS needed for profile provisioning.
-- I will not refactor unrelated UI/logic.
+4) Re-fetch profile and store in app state
+- After insert, fetch again with `.single()` and store it.
+- Build the app `User` object from:
+  - `profile.full_name` (fallback to email)
+  - `profile.role` -> map to app roles
+- Set `isLoading` only after this completes.
 
+Where we call provisioning
+- After successful password login:
+  - After `signInWithPassword` returns success, call the provisioning function (which itself uses getUser()).
+- After session restore / auth state change:
+  - Keep the existing deadlock-safe pattern: inside `onAuthStateChange`, do synchronous state updates only, then `setTimeout(0)` to call provisioning (so no Supabase calls happen inside the callback).
+
+C) App: ensure protected routes never render before provisioning completes
+Target file:
+- `app/dashboard/layout.tsx` (and possibly root layout if it checks auth)
+
+What we will ensure
+- The dashboard layout should not do permission checks while `isLoading` is true.
+- It already shows a loading overlay during `isLoading`; we’ll ensure `isLoading` stays true until:
+  - session is known AND
+  - profile provisioning is complete AND
+  - role is loaded into state
+This eliminates the “route guard runs too early” class of failures.
+
+D) Roles and route guards: rely on the profile in state
+Target file:
+- `lib/rbac.ts`
+- Already uses `user.role` from auth context. We will ensure `user.role` is derived exclusively from the fetched profile, and never from any cached client-side storage/hardcoded values.
+
+E) Database sanity check (no trigger dependency)
+- We will not depend on any DB trigger, regardless of whether `handle_new_user` exists.
+- Optional follow-up (only if needed for debugging):
+  - Confirm `profiles` has:
+    - SELECT self policy (exists)
+    - INSERT self policy (should exist from prior migration; if it’s missing or incorrect, profile provisioning will fail)
+  - Confirm there is no UPDATE policy that would allow users to change `role`.
+
+Verification checklist (what you should test end-to-end)
+1) Existing user with an existing profile row
+- Login → should go to `/dashboard` without errors.
+- Refresh → should remain logged in.
+
+2) New user with no profile row
+- Create user in Supabase Auth (or sign up if enabled) so they can login.
+- Login:
+  - App should insert a `profiles` row with role `viewer` and `full_name=email`.
+  - User should land on `/dashboard` with restricted access if you configured VIEWER restrictions.
+
+3) RLS failure case (to confirm error is clear)
+- Temporarily remove/disable the `profiles` INSERT policy (in a test environment)
+- Login should fail with a clear provisioning error message (not a silent loop).
+
+Deliverables (what will be changed in code)
+- `lib/auth-context.tsx`
+  - Replace the current provisioning flow to exactly match:
+    - getUser → select single → insert if missing → re-fetch → store in state
+  - Add robust “not found” detection for `.single()` errors.
+  - Keep the `setTimeout(0)` deferral inside `onAuthStateChange`.
+
+- No other refactors outside auth/provisioning/guards.
+
+Build unblock deliverables (what you will change manually)
+- `package.json`: add `build:dev`
+- Create `index.html` at project root
+
+If you approve this plan, the next step in default mode is implementing the code changes in `lib/auth-context.tsx` (and any small guard timing fixes in `app/dashboard/layout.tsx` if required) and then re-testing login + refresh flows.
