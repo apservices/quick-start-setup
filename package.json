@@ -8,7 +8,9 @@
     "build:dev": "echo \"lovable preview ok\"",
     "start": "next start",
     "lint": "eslint ."
-  }
+  },
+  "dependencies": {},
+  "devDependencies": {}
 }
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
