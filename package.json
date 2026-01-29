@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "build:dev": "echo \"lovable preview ok\"",
-    "start": "next start",
-    "lint": "eslint ."
-  },
+  "dev": "next dev",
+  "build": "next build",
+  "build:dev": "npx serve -s . -l 5173", 
+  "start": "next start",
+  "lint": "eslint ."
+},
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "1.2.2",
