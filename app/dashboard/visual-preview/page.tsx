@@ -7,49 +7,74 @@ import { PreviewGallery } from "@/components/visual-preview/preview-gallery"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { dataStore } from "@/lib/data-store"
 import { useAuth } from "@/lib/auth-context"
-import type { Forge, Model } from "@/lib/types"
 import { Sparkles, AlertCircle, Eye } from "lucide-react"
+import { supabase } from "@/src/integrations/supabase/client"
+
+type ForgeRow = {
+  id: string
+  model_id: string
+  state: string
+  digital_twin_id: string | null
+}
+
+type ModelRow = {
+  id: string
+  full_name: string
+}
 
 export default function VisualPreviewPage() {
   const { user } = useAuth()
-  const [certifiedForges, setCertifiedForges] = useState<Forge[]>([])
-  const [models, setModels] = useState<Map<string, Model>>(new Map())
+  const [certifiedForges, setCertifiedForges] = useState<ForgeRow[]>([])
+  const [models, setModels] = useState<Map<string, ModelRow>>(new Map())
   const [selectedDigitalTwinId, setSelectedDigitalTwinId] = useState<string>("")
   const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
-    if (dataStore) {
-      // Get certified forges with digitalTwinId
-      let forges = dataStore.getForges().filter((f) => f.state === "CERTIFIED" && f.digitalTwinId)
+    const load = async () => {
+      const { data: forges, error: forgesError } = await supabase
+        .from("forges")
+        .select("id,model_id,state,digital_twin_id")
+        .eq("state", "CERTIFIED")
+        .not("digital_twin_id", "is", null)
+        .order("created_at", { ascending: false })
 
-      // If MODEL role, only show their own forges
-      if (user?.role === "MODEL" && user.linkedModelId) {
-        forges = forges.filter((f) => f.modelId === user.linkedModelId)
+      if (forgesError) {
+        setCertifiedForges([])
+        setModels(new Map())
+        return
       }
 
-      setCertifiedForges(forges)
+      const rows = (forges ?? []) as ForgeRow[]
+      setCertifiedForges(rows)
 
-      const modelMap = new Map<string, Model>()
-      dataStore.getModels().forEach((m) => modelMap.set(m.id, m))
-      setModels(modelMap)
+      const modelIds = Array.from(new Set(rows.map((f) => f.model_id).filter(Boolean)))
+      if (modelIds.length > 0) {
+        const { data: modelRows } = await supabase.from("models").select("id,full_name").in("id", modelIds)
+        const modelMap = new Map<string, ModelRow>()
+        ;(modelRows ?? []).forEach((m) => modelMap.set(m.id, m as ModelRow))
+        setModels(modelMap)
+      } else {
+        setModels(new Map())
+      }
 
-      // Auto-select first available
-      if (forges.length > 0 && !selectedDigitalTwinId) {
-        setSelectedDigitalTwinId(forges[0].digitalTwinId!)
+      if (rows.length > 0 && !selectedDigitalTwinId) {
+        setSelectedDigitalTwinId(rows[0].digital_twin_id!)
       }
     }
+
+    void load()
   }, [user, selectedDigitalTwinId])
 
-  const selectedForge = certifiedForges.find((f) => f.digitalTwinId === selectedDigitalTwinId)
-  const selectedModel = selectedForge ? models.get(selectedForge.modelId) : null
+  const selectedForge = certifiedForges.find((f) => f.digital_twin_id === selectedDigitalTwinId)
+  const selectedModel = selectedForge ? models.get(selectedForge.model_id) : null
 
   const handlePreviewGenerated = () => {
     setRefreshKey((k) => k + 1)
   }
 
-  const canGenerate = user?.role === "ADMIN" || user?.role === "OPERATOR"
+  // Generation currently relies on Supabase policies that only allow admin to manage previews/captures globally.
+  const canGenerate = user?.role === "ADMIN"
 
   return (
     <div>
@@ -93,13 +118,13 @@ export default function VisualPreviewPage() {
                 </SelectTrigger>
                 <SelectContent>
                   {certifiedForges.map((forge) => {
-                    const model = models.get(forge.modelId)
+                    const model = models.get(forge.model_id)
                     return (
-                      <SelectItem key={forge.digitalTwinId} value={forge.digitalTwinId!}>
+                      <SelectItem key={forge.digital_twin_id} value={forge.digital_twin_id!}>
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs text-primary">{forge.digitalTwinId}</span>
+                          <span className="font-mono text-xs text-primary">{forge.digital_twin_id}</span>
                           <span className="text-muted-foreground">-</span>
-                          <span>{model?.name || "Unknown"}</span>
+                          <span>{model?.full_name || "Unknown"}</span>
                         </div>
                       </SelectItem>
                     )
@@ -116,7 +141,7 @@ export default function VisualPreviewPage() {
             {canGenerate && (
               <PreviewGenerator
                 digitalTwinId={selectedDigitalTwinId}
-                modelName={selectedModel.name}
+                modelName={selectedModel.full_name}
                 onGenerated={handlePreviewGenerated}
               />
             )}
