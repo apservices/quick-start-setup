@@ -194,6 +194,56 @@ export type Database = {
           },
         ]
       }
+      forges: {
+        Row: {
+          capture_progress: number
+          certified_at: string | null
+          created_at: string
+          created_by: string
+          digital_twin_id: string | null
+          id: string
+          model_id: string
+          seed_hash: string | null
+          state: string
+          updated_at: string
+          version: number
+        }
+        Insert: {
+          capture_progress?: number
+          certified_at?: string | null
+          created_at?: string
+          created_by: string
+          digital_twin_id?: string | null
+          id?: string
+          model_id: string
+          seed_hash?: string | null
+          state?: string
+          updated_at?: string
+          version?: number
+        }
+        Update: {
+          capture_progress?: number
+          certified_at?: string | null
+          created_at?: string
+          created_by?: string
+          digital_twin_id?: string | null
+          id?: string
+          model_id?: string
+          seed_hash?: string | null
+          state?: string
+          updated_at?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "forges_model_id_fkey"
+            columns: ["model_id"]
+            isOneToOne: false
+            referencedRelation: "models"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       job_applications: {
         Row: {
           created_at: string | null
