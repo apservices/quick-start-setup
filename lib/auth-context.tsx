@@ -6,6 +6,7 @@ import { ROLE_SCOPES, type User, type UserRole } from "./types"
 import { validateEmail, validatePassword, sanitizeEmail } from "./validation"
 import { systemLogger } from "./system-logger"
 import { supabase } from "@/src/integrations/supabase/client"
+import { ensureProfileForUser, getAuthedUser, type ProfileRow } from "./profile-provisioning"
 
 interface AuthContextType {
   user: User | null
@@ -42,37 +43,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const ensureProfileExists = useCallback(async (userId: string, email?: string | null) => {
-    const { data: profile, error: readError } = await supabase
-      .from("profiles")
-      .select("id, role, full_name")
-      .eq("id", userId)
-      .maybeSingle()
-
-    if (readError) throw readError
-    if (profile) return profile
-
-    const { error: insertError } = await supabase.from("profiles").insert({
-      id: userId,
-      role: "viewer",
-      full_name: email || null,
-    })
-    if (insertError) throw insertError
-
-    const { data: created, error: reReadError } = await supabase
-      .from("profiles")
-      .select("id, role, full_name")
-      .eq("id", userId)
-      .maybeSingle()
-    if (reReadError) throw reReadError
-    if (!created) throw new Error("Profile provisioning failed: row not found after insert")
-    return created
-  }, [])
-
-  const buildUserFromSession = useCallback(
-    async (sbUser: SupabaseUser): Promise<User> => {
-      const profile = await ensureProfileExists(sbUser.id, sbUser.email)
-
+  const buildUserFromProfile = useCallback(
+    (sbUser: SupabaseUser, profile: ProfileRow): User => {
       const nameFromMeta =
         (typeof sbUser.user_metadata?.full_name === "string" && sbUser.user_metadata.full_name) ||
         (typeof sbUser.user_metadata?.name === "string" && sbUser.user_metadata.name) ||
@@ -88,8 +60,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         lastLoginAt: new Date(),
       }
     },
-    [ensureProfileExists, mapProfileRoleToAppRole],
+    [mapProfileRoleToAppRole],
   )
+
+  const provisionProfileFromAuth = useCallback(async (): Promise<{ sbUser: SupabaseUser; profile: ProfileRow } | null> => {
+    const sbUser = await getAuthedUser()
+    if (!sbUser) return null
+    const profile = await ensureProfileForUser(sbUser)
+    return { sbUser, profile }
+  }, [])
 
   const validateSession = useCallback((): boolean => {
     if (!user) return false
@@ -99,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return false
     }
     return true
-  }, [])
+  }, [user, sessionExpiry])
 
   useEffect(() => {
     // IMPORTANT: listener first, then initial session fetch (prevents missing events)
@@ -109,9 +88,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(nextSession)
       if (nextSession?.user) {
         // Defer any extra Supabase calls to avoid deadlocks.
+        setIsLoading(true)
         setTimeout(() => {
-          buildUserFromSession(nextSession.user)
-            .then((u) => {
+          provisionProfileFromAuth()
+            .then((result) => {
+              if (!result) {
+                setUser(null)
+                setSessionExpiry(null)
+                return
+              }
+              const u = buildUserFromProfile(result.sbUser, result.profile)
               setUser(u)
               setSessionExpiry(Date.now() + SESSION_TIMEOUT)
             })
@@ -119,6 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               setUser(null)
               setSessionExpiry(null)
             })
+            .finally(() => setIsLoading(false))
         }, 0)
       } else {
         setUser(null)
@@ -131,18 +118,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then(({ data }: { data: { session: Session | null } }) => {
         setSession(data.session)
         if (data.session?.user) {
-          return buildUserFromSession(data.session.user).then((u) => {
+          // Ensure we verify session via getUser() and provision profile via .single() flow.
+          return provisionProfileFromAuth().then((result) => {
+            if (!result) {
+              setUser(null)
+              setSessionExpiry(null)
+              return
+            }
+            const u = buildUserFromProfile(result.sbUser, result.profile)
             setUser(u)
             setSessionExpiry(Date.now() + SESSION_TIMEOUT)
           })
         }
+
         setUser(null)
         setSessionExpiry(null)
       })
       .finally(() => setIsLoading(false))
 
     return () => subscription.unsubscribe()
-  }, [buildUserFromSession])
+  }, [buildUserFromProfile, provisionProfileFromAuth])
 
   useEffect(() => {
     if (!sessionExpiry) return
@@ -186,15 +181,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (data.session?.user) {
       setSession(data.session)
-      const u = await buildUserFromSession(data.session.user)
-      setUser(u)
-      setSessionExpiry(Date.now() + SESSION_TIMEOUT)
-      systemLogger?.info("User logged in", "Auth", { userId: u.id })
+      // IMPORTANT: Verify authenticated user with getUser() and guarantee profiles row.
+      try {
+        const result = await provisionProfileFromAuth()
+        if (!result) {
+          setUser(null)
+          setSessionExpiry(null)
+          return { success: false, error: "Authentication session could not be verified." }
+        }
+        const u = buildUserFromProfile(result.sbUser, result.profile)
+        setUser(u)
+        setSessionExpiry(Date.now() + SESSION_TIMEOUT)
+        systemLogger?.info("User logged in", "Auth", { userId: u.id })
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e))
+        systemLogger?.error("Profile provisioning failed after login", "Auth", err)
+        // Prevent infinite redirect loops by ending the session if provisioning fails.
+        supabase.auth.signOut()
+        setUser(null)
+        setSession(null)
+        setSessionExpiry(null)
+        return { success: false, error: "Account provisioning failed. Please contact support." }
+      }
     }
 
     setIsLoading(false)
     return { success: true }
-  }, [])
+  }, [buildUserFromProfile, provisionProfileFromAuth])
 
   const logout = useCallback(() => {
     if (user) systemLogger?.info("User logged out", "Auth", { userId: user.id })
