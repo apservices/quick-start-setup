@@ -54,6 +54,9 @@ export const systemConfig: SystemConfig = {
     brandPortal: false,
     contractSystem: false,
     licensingSystem: false,
+    visualTwinPreview: false,
+    visualTwinGenerator: false,
+    assetLibrary: false,
   },
 }
 

@@ -48,7 +48,8 @@ export interface User {
   lastLoginAt: Date
 }
 
-export type PlanType = "BASIC" | "HYBRID" | "ENTERPRISE"
+// Plan type stored in DB / used across UI
+export type PlanType = "PHYSICAL" | "DIGITAL" | "HYBRID"
 
 export interface Model {
   id: string

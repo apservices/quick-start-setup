@@ -109,7 +109,9 @@ class Phase2Store {
             targetMap.set(item.id, normalized as T)
           })
         } catch (e) {
-          systemLogger?.warn(`Erro ao parsear ${raw.slice(0, 30)}...`, "Phase2Store", e)
+          systemLogger?.warn(`Erro ao parsear ${raw.slice(0, 30)}...`, "Phase2Store", {
+            error: e instanceof Error ? e.message : String(e),
+          })
         }
       }
 
@@ -492,11 +494,11 @@ class Phase2Store {
     this.addAuditLog({
       userId: job.createdBy,
       userName: "User",
-      action: job.status === "DONE" ? "VTG_JOB_COMPLETED" : "VTG_JOB_FAILED",
+      action: job.status === "DONE" ? "VTG_JOB_COMPLETED" : "SYSTEM_ERROR",
       entityType: "VTGJob",
       entityId: job.id,
       digitalTwinId: job.digitalTwinId,
-      metadata: job.result ? { result: job.result } : undefined,
+      metadata: job.result ? { result: job.result, reason: job.status === "DONE" ? undefined : "VTG_JOB_FAILED" } : undefined,
     })
   }
 

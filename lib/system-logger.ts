@@ -1,6 +1,8 @@
 // Centralized logging system for observability
 import type { SystemHealth } from "./types"
 
+export type { SystemHealth } from "./types"
+
 export type LogLevel = "debug" | "info" | "warn" | "error"
 
 interface LogEntry {
@@ -161,6 +163,7 @@ export function getSystemHealth(): SystemHealth {
     storage: "up" as const,
     processing: "up" as const,
     certification: "up" as const,
+    vtg: "up" as const,
   }
 
   // Determine overall status
@@ -174,6 +177,8 @@ export function getSystemHealth(): SystemHealth {
     certifiedForges: 0,
     activeModels: 0,
     pendingValidations: 0,
+    activePreviews: 0,
+    activeLicenses: 0,
     errorRate,
   }
 
@@ -186,6 +191,8 @@ export function getSystemHealth(): SystemHealth {
       certifiedForges: forges.filter((f: { state: string }) => f.state === "CERTIFIED").length,
       activeModels: models.filter((m: { status: string }) => m.status === "ACTIVE").length,
       pendingValidations: forges.filter((f: { state: string }) => f.state === "VALIDATED").length,
+      activePreviews: 0,
+      activeLicenses: 0,
       errorRate,
     }
   }
