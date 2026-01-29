@@ -8,6 +8,39 @@ import { systemLogger } from "./system-logger"
 import { supabase } from "@/src/integrations/supabase/client"
 import { ensureProfileForUser, getAuthedUser, type ProfileRow } from "./profile-provisioning"
 
+type UserRoleRow = { role: string }
+
+function mapDbRoleToAppRole(dbRole: string | null | undefined): UserRole {
+  switch ((dbRole || "").toLowerCase()) {
+    case "admin":
+      return "ADMIN"
+    case "operator":
+      return "OPERATOR"
+    case "model":
+      return "MODEL"
+    case "client":
+      return "CLIENT"
+    default:
+      return "VIEWER"
+  }
+}
+
+function pickHighestRole(roles: string[]): UserRole {
+  const normalized = roles.map((r) => r.toLowerCase())
+  if (normalized.includes("admin")) return "ADMIN"
+  if (normalized.includes("operator")) return "OPERATOR"
+  if (normalized.includes("model")) return "MODEL"
+  if (normalized.includes("client")) return "CLIENT"
+  return "VIEWER"
+}
+
+async function getUserRoleFromDb(userId: string): Promise<UserRole> {
+  const { data, error } = await supabase.from("user_roles").select("role").eq("user_id", userId)
+  if (error) return "VIEWER"
+  const roles = ((data ?? []) as UserRoleRow[]).map((r) => r.role)
+  return pickHighestRole(roles)
+}
+
 interface AuthContextType {
   user: User | null
   isLoading: boolean
@@ -29,22 +62,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const [sessionExpiry, setSessionExpiry] = useState<number | null>(null)
 
-  const mapProfileRoleToAppRole = useCallback((role: string | null | undefined): UserRole => {
-    switch ((role || "").toLowerCase()) {
-      case "admin":
-        return "ADMIN"
-      case "model":
-        return "MODEL"
-      case "client":
-        return "CLIENT"
-      case "viewer":
-      default:
-        return "VIEWER"
-    }
-  }, [])
-
   const buildUserFromProfile = useCallback(
-    (sbUser: SupabaseUser, profile: ProfileRow): User => {
+    (sbUser: SupabaseUser, profile: ProfileRow, role: UserRole): User => {
       const nameFromMeta =
         (typeof sbUser.user_metadata?.full_name === "string" && sbUser.user_metadata.full_name) ||
         (typeof sbUser.user_metadata?.name === "string" && sbUser.user_metadata.name) ||
@@ -55,12 +74,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         id: sbUser.id,
         email: sbUser.email || "",
         name: profile.full_name || nameFromMeta,
-        role: mapProfileRoleToAppRole(profile.role),
+        role,
         createdAt: sbUser.created_at ? new Date(sbUser.created_at) : new Date(),
         lastLoginAt: new Date(),
       }
     },
-    [mapProfileRoleToAppRole],
+    [],
   )
 
   const provisionProfileFromAuth = useCallback(async (): Promise<{ sbUser: SupabaseUser; profile: ProfileRow } | null> => {
@@ -68,6 +87,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!sbUser) return null
     const profile = await ensureProfileForUser(sbUser)
     return { sbUser, profile }
+  }, [])
+
+  const provisionRoleFromDb = useCallback(async (userId: string): Promise<UserRole> => {
+    return getUserRoleFromDb(userId)
   }, [])
 
   const validateSession = useCallback((): boolean => {
@@ -97,9 +120,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 setSessionExpiry(null)
                 return
               }
-              const u = buildUserFromProfile(result.sbUser, result.profile)
-              setUser(u)
-              setSessionExpiry(Date.now() + SESSION_TIMEOUT)
+              return provisionRoleFromDb(result.sbUser.id).then((role) => {
+                const u = buildUserFromProfile(result.sbUser, result.profile, role)
+                setUser(u)
+                setSessionExpiry(Date.now() + SESSION_TIMEOUT)
+              })
             })
             .catch(() => {
               setUser(null)
@@ -125,9 +150,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               setSessionExpiry(null)
               return
             }
-            const u = buildUserFromProfile(result.sbUser, result.profile)
-            setUser(u)
-            setSessionExpiry(Date.now() + SESSION_TIMEOUT)
+            return provisionRoleFromDb(result.sbUser.id).then((role) => {
+              const u = buildUserFromProfile(result.sbUser, result.profile, role)
+              setUser(u)
+              setSessionExpiry(Date.now() + SESSION_TIMEOUT)
+            })
           })
         }
 
@@ -189,10 +216,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSessionExpiry(null)
           return { success: false, error: "Authentication session could not be verified." }
         }
-        const u = buildUserFromProfile(result.sbUser, result.profile)
+        const role = await provisionRoleFromDb(result.sbUser.id)
+        const u = buildUserFromProfile(result.sbUser, result.profile, role)
         setUser(u)
         setSessionExpiry(Date.now() + SESSION_TIMEOUT)
-        systemLogger?.info("User logged in", "Auth", { userId: u.id })
+        systemLogger?.info("User logged in", "Auth", { userId: u.id, role })
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e))
         systemLogger?.error("Profile provisioning failed after login", "Auth", err)
