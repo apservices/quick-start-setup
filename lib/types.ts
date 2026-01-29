@@ -1,6 +1,6 @@
 // Core domain types for THE FORJ CORE system
 
-export type UserRole = "ADMIN" | "OPERATOR" | "MODEL" | "CLIENT"
+export type UserRole = "ADMIN" | "OPERATOR" | "MODEL" | "CLIENT" | "VIEWER"
 
 export const ROLE_SCOPES: Record<UserRole, string[]> = {
   ADMIN: ["*"], // Full access
@@ -35,6 +35,7 @@ export const ROLE_SCOPES: Record<UserRole, string[]> = {
     "career:consents",
   ],
   CLIENT: ["certificates:read", "assets:read:licensed", "assets:download:licensed", "licenses:read:self"],
+  VIEWER: [],
 }
 
 export interface User {

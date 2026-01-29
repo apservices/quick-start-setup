@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react"
 import type { Session, User as SupabaseUser } from "@supabase/supabase-js"
-import type { User, UserRole } from "./types"
+import { ROLE_SCOPES, type User, type UserRole } from "./types"
 import { validateEmail, validatePassword, sanitizeEmail } from "./validation"
 import { systemLogger } from "./system-logger"
 import { supabase } from "@/src/integrations/supabase/client"
@@ -19,41 +19,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null)
 
-const ROLE_SCOPE_MAP: Record<UserRole, string[]> = {
-  ADMIN: ["*"],
-  OPERATOR: [
-    "models:read",
-    "models:create",
-    "models:update",
-    "forges:read",
-    "forges:create",
-    "forges:transition",
-    "captures:read",
-    "captures:upload",
-    "validation:execute",
-    "certification:execute",
-    "capture_viewer:read",
-    "vtp:generate",
-    "vtp:read",
-    "vtg:generate",
-    "vtg:read",
-    "assets:read",
-    "licenses:read",
-    "licenses:create",
-  ],
-  MODEL: [
-    "models:read:self",
-    "forges:read:self",
-    "certificates:read:self",
-    "capture_viewer:read:self",
-    "vtp:read:self",
-    "assets:read:self",
-    "career:read",
-    "career:consents",
-  ],
-  CLIENT: ["certificates:read", "assets:read:licensed", "assets:download:licensed", "licenses:read:self"],
-}
-
 // Session timeout in milliseconds (30 minutes)
 const SESSION_TIMEOUT = 30 * 60 * 1000
 
@@ -63,40 +28,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const [sessionExpiry, setSessionExpiry] = useState<number | null>(null)
 
-  const mapDbRoleToAppRole = useCallback((role: string | null | undefined): UserRole => {
+  const mapProfileRoleToAppRole = useCallback((role: string | null | undefined): UserRole => {
     switch ((role || "").toLowerCase()) {
       case "admin":
         return "ADMIN"
-      case "operator":
-        return "OPERATOR"
+      case "model":
+        return "MODEL"
       case "client":
         return "CLIENT"
-      case "model":
+      case "viewer":
       default:
-        return "MODEL"
+        return "VIEWER"
     }
   }, [])
 
-  const ensureDefaultRole = useCallback(async (userId: string) => {
-    // Best-effort: assign default 'model' role if the user has no roles.
-    const { data: existing, error: readError } = await supabase
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", userId)
-      .limit(1)
+  const ensureProfileExists = useCallback(async (userId: string, email?: string | null) => {
+    const { data: profile, error: readError } = await supabase
+      .from("profiles")
+      .select("id, role, full_name")
+      .eq("id", userId)
+      .maybeSingle()
 
-    if (readError) return
-    if (existing && existing.length > 0) return
+    if (readError) throw readError
+    if (profile) return profile
 
-    await supabase.from("user_roles").insert({ user_id: userId, role: "model" })
+    const { error: insertError } = await supabase.from("profiles").insert({
+      id: userId,
+      role: "viewer",
+      full_name: email || null,
+    })
+    if (insertError) throw insertError
+
+    const { data: created, error: reReadError } = await supabase
+      .from("profiles")
+      .select("id, role, full_name")
+      .eq("id", userId)
+      .maybeSingle()
+    if (reReadError) throw reReadError
+    if (!created) throw new Error("Profile provisioning failed: row not found after insert")
+    return created
   }, [])
 
   const buildUserFromSession = useCallback(
     async (sbUser: SupabaseUser): Promise<User> => {
-      await ensureDefaultRole(sbUser.id)
-
-      const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", sbUser.id)
-      const primaryRole = roles?.[0]?.role ?? "model"
+      const profile = await ensureProfileExists(sbUser.id, sbUser.email)
 
       const nameFromMeta =
         (typeof sbUser.user_metadata?.full_name === "string" && sbUser.user_metadata.full_name) ||
@@ -107,13 +82,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return {
         id: sbUser.id,
         email: sbUser.email || "",
-        name: nameFromMeta,
-        role: mapDbRoleToAppRole(primaryRole),
+        name: profile.full_name || nameFromMeta,
+        role: mapProfileRoleToAppRole(profile.role),
         createdAt: sbUser.created_at ? new Date(sbUser.created_at) : new Date(),
         lastLoginAt: new Date(),
       }
     },
-    [ensureDefaultRole, mapDbRoleToAppRole],
+    [ensureProfileExists, mapProfileRoleToAppRole],
   )
 
   const validateSession = useCallback((): boolean => {
@@ -242,7 +217,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const hasScope = useCallback(
     (scope: string) => {
       if (!user) return false
-      const scopes = ROLE_SCOPE_MAP[user.role]
+      const scopes = ROLE_SCOPES[user.role]
       if (scopes.includes("*")) return true
       return scopes.some((s) => {
         if (s === scope) return true

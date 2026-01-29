@@ -127,6 +127,11 @@ export function canAccessRoute(role: UserRole | undefined, route: string): boole
   // Admin can access everything
   if (role === "ADMIN") return true
 
+  // VIEWER is intentionally restricted: keep the user logged in but limit access.
+  if (role === "VIEWER") {
+    return route === "/dashboard"
+  }
+
   // Define route permissions - comprehensive list
   const routePermissions: Record<string, Permission[]> = {
     // Core dashboard
