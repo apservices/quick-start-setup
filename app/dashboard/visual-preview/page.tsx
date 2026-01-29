@@ -52,7 +52,7 @@ export default function VisualPreviewPage() {
       if (modelIds.length > 0) {
         const { data: modelRows } = await supabase.from("models").select("id,full_name").in("id", modelIds)
         const modelMap = new Map<string, ModelRow>()
-        ;(modelRows ?? []).forEach((m) => modelMap.set(m.id, m as ModelRow))
+        ;(modelRows ?? []).forEach((m: ModelRow) => modelMap.set(m.id, m))
         setModels(modelMap)
       } else {
         setModels(new Map())
