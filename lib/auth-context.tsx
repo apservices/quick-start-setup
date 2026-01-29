@@ -110,46 +110,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [sessionExpiry, setSessionExpiry] = useState<number | null>(null)
 
   const validateSession = useCallback((): boolean => {
-    if (typeof window === "undefined") return false
-
-    const stored = localStorage.getItem("atlas_session")
-    if (!stored) return false
-
-    try {
-      const parsed = JSON.parse(stored)
-      const expiry = parsed.expiry
-
-      if (!expiry || Date.now() > expiry) {
-        localStorage.removeItem("atlas_session")
-        setUser(null)
-        return false
-      }
-
-      return true
-    } catch {
-      localStorage.removeItem("atlas_session")
+    // Security: do not persist auth sessions in localStorage.
+    // Demo auth is kept in-memory only.
+    if (!user) return false
+    if (sessionExpiry && Date.now() > sessionExpiry) {
+      setUser(null)
+      setSessionExpiry(null)
       return false
     }
+    return true
   }, [])
 
   useEffect(() => {
-    const stored = localStorage.getItem("atlas_session")
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored)
-
-        if (parsed.expiry && Date.now() > parsed.expiry) {
-          localStorage.removeItem("atlas_session")
-          setIsLoading(false)
-          return
-        }
-
-        setUser(parsed.user)
-        setSessionExpiry(parsed.expiry)
-      } catch {
-        localStorage.removeItem("atlas_session")
-      }
-    }
     setIsLoading(false)
   }, [])
 
@@ -201,25 +173,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(loggedInUser)
     setSessionExpiry(expiry)
 
-    localStorage.setItem(
-      "atlas_session",
-      JSON.stringify({
-        user: loggedInUser,
-        token: `jwt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        expiry,
-      }),
-    )
-
-    const log: AuditLog = {
-      id: `log_${Date.now()}`,
-      userId: loggedInUser.id,
-      userName: loggedInUser.name,
-      action: "USER_LOGIN",
-      timestamp: new Date(),
-    }
-    const logs = JSON.parse(localStorage.getItem("atlas_audit_logs") || "[]")
-    logs.push(log)
-    localStorage.setItem("atlas_audit_logs", JSON.stringify(logs))
+    // Security: do not persist session/audit logs to localStorage.
+    // (Audit logging should be moved server-side when Supabase Auth is enabled.)
 
     systemLogger?.info("User logged in", "Auth", { userId: loggedInUser.id })
     setIsLoading(false)
@@ -227,24 +182,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const logout = useCallback(() => {
-    if (user) {
-      const log: AuditLog = {
-        id: `log_${Date.now()}`,
-        userId: user.id,
-        userName: user.name,
-        action: "USER_LOGOUT",
-        timestamp: new Date(),
-      }
-      const logs = JSON.parse(localStorage.getItem("atlas_audit_logs") || "[]")
-      logs.push(log)
-      localStorage.setItem("atlas_audit_logs", JSON.stringify(logs))
-
-      systemLogger?.info("User logged out", "Auth", { userId: user.id })
-    }
+    if (user) systemLogger?.info("User logged out", "Auth", { userId: user.id })
 
     setUser(null)
     setSessionExpiry(null)
-    localStorage.removeItem("atlas_session")
   }, [user])
 
   const hasPermission = useCallback(
