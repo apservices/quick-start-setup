@@ -127,24 +127,7 @@ export default function LoginPage() {
               </Button>
             </form>
 
-            {/* Only show demo credentials in non-production */}
-            {!productionMode && (
-              <div className="mt-6 pt-6 border-t border-border">
-                <p className="text-xs text-muted-foreground text-center mb-3">Demo Credentials</p>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="p-2 rounded bg-muted/50">
-                    <p className="text-muted-foreground">Admin</p>
-                    <p className="text-foreground font-mono">admin@atlas.io</p>
-                    <p className="text-muted-foreground font-mono">admin123</p>
-                  </div>
-                  <div className="p-2 rounded bg-muted/50">
-                    <p className="text-muted-foreground">Operator</p>
-                    <p className="text-foreground font-mono">operator@atlas.io</p>
-                    <p className="text-muted-foreground font-mono">operator123</p>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Demo credentials removed: authentication is handled by Supabase Auth. */}
           </CardContent>
         </Card>
 

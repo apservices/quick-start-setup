@@ -3,8 +3,8 @@
 import { useState } from "react"
 import Link from "next/link"
 import type { Model } from "@/lib/types"
-import { dataStore } from "@/lib/data-store"
 import { useAuth } from "@/lib/auth-context"
+import { supabase } from "@/src/integrations/supabase/client"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -54,38 +54,30 @@ export function ModelTable({ models, onUpdate }: ModelTableProps) {
   const [consentModel, setConsentModel] = useState<Model | null>(null)
   const [archiveModel, setArchiveModel] = useState<Model | null>(null)
 
-  const handleArchive = () => {
+  const handleArchive = async () => {
     if (!archiveModel || !user) return
 
-    dataStore.updateModel(archiveModel.id, { status: "ARCHIVED" })
-    dataStore.addAuditLog({
-      userId: user.id,
-      userName: user.name,
+    const { error } = await supabase.from("models").update({ status: "archived" }).eq("id", archiveModel.id)
+    if (error) {
+      toast.error("Failed to archive model", { description: error.message })
+      return
+    }
+
+    await supabase.from("audit_logs").insert({
+      actor_id: user.id,
       action: "MODEL_ARCHIVED",
-      modelId: archiveModel.id,
+      target_table: "models",
+      target_id: archiveModel.id,
     })
+
     toast.success("Model archived successfully")
     setArchiveModel(null)
     onUpdate()
   }
 
   const handleStartForge = (model: Model) => {
-    if (!user) return
-
-    const forge = dataStore.createForge(model.id, user.id)
-    if (forge) {
-      dataStore.addAuditLog({
-        userId: user.id,
-        userName: user.name,
-        action: "FORGE_CREATED",
-        modelId: model.id,
-        forgeId: forge.id,
-      })
-      toast.success("New forge created", {
-        description: `Forge ID: ${forge.id}`,
-      })
-      onUpdate()
-    }
+    // TODO: Forge pipeline persistence will be migrated to Supabase.
+    toast.info("Forge creation will be enabled once the forge pipeline is backed by Supabase.")
   }
 
   if (models.length === 0) {

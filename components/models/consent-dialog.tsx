@@ -2,8 +2,8 @@
 
 import { useState } from "react"
 import { useAuth } from "@/lib/auth-context"
-import { dataStore } from "@/lib/data-store"
 import type { Model } from "@/lib/types"
+import { supabase } from "@/src/integrations/supabase/client"
 import {
   Dialog,
   DialogContent,
@@ -34,17 +34,18 @@ export function ConsentDialog({ model, onOpenChange, onConsented }: ConsentDialo
 
     setIsSubmitting(true)
 
-    dataStore.updateModel(model.id, {
-      consentGiven: true,
-      consentDate: new Date(),
-      status: "ACTIVE",
-    })
+    const { error } = await supabase.from("models").update({ status: "active" }).eq("id", model.id)
+    if (error) {
+      toast.error("Failed to record consent", { description: error.message })
+      setIsSubmitting(false)
+      return
+    }
 
-    dataStore.addAuditLog({
-      userId: user.id,
-      userName: user.name,
+    await supabase.from("audit_logs").insert({
+      actor_id: user.id,
       action: "CONSENT_GIVEN",
-      modelId: model.id,
+      target_table: "models",
+      target_id: model.id,
     })
 
     toast.success("Consent recorded successfully", {

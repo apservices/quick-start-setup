@@ -4,8 +4,8 @@ import type React from "react"
 
 import { useState, useEffect } from "react"
 import { useAuth } from "@/lib/auth-context"
-import { dataStore } from "@/lib/data-store"
 import type { Model, PlanType } from "@/lib/types"
+import { supabase } from "@/src/integrations/supabase/client"
 import {
   Dialog,
   DialogContent,
@@ -29,6 +29,7 @@ interface EditModelDialogProps {
 export function EditModelDialog({ model, onOpenChange, onUpdated }: EditModelDialogProps) {
   const { user } = useAuth()
   const [name, setName] = useState("")
+  const [email, setEmail] = useState("")
   const [planType, setPlanType] = useState<PlanType>("DIGITAL")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -36,6 +37,8 @@ export function EditModelDialog({ model, onOpenChange, onUpdated }: EditModelDia
     if (model) {
       setName(model.name)
       setPlanType(model.planType)
+      // Stored only for display; DB value is fetched server-side in the future.
+      setEmail("")
     }
   }, [model])
 
@@ -45,14 +48,18 @@ export function EditModelDialog({ model, onOpenChange, onUpdated }: EditModelDia
 
     setIsSubmitting(true)
 
-    dataStore.updateModel(model.id, { name, planType })
+    const { error } = await supabase.from("models").update({ full_name: name }).eq("id", model.id)
+    if (error) {
+      toast.error("Failed to update model", { description: error.message })
+      setIsSubmitting(false)
+      return
+    }
 
-    dataStore.addAuditLog({
-      userId: user.id,
-      userName: user.name,
+    await supabase.from("audit_logs").insert({
+      actor_id: user.id,
       action: "MODEL_UPDATED",
-      modelId: model.id,
-      metadata: { name, planType },
+      target_table: "models",
+      target_id: model.id,
     })
 
     toast.success("Model updated successfully")
@@ -84,6 +91,11 @@ export function EditModelDialog({ model, onOpenChange, onUpdated }: EditModelDia
           <div className="space-y-2">
             <Label>Internal ID</Label>
             <Input value={model?.internalId || ""} disabled className="bg-muted border-border font-mono" />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Email</Label>
+            <Input value={email} disabled className="bg-muted border-border" placeholder="(stored in database)" />
           </div>
 
           <div className="space-y-2">

@@ -4,28 +4,55 @@ import { useState, useEffect } from "react"
 import { Header } from "@/components/dashboard/header"
 import { ModelTable } from "@/components/models/model-table"
 import { CreateModelDialog } from "@/components/models/create-model-dialog"
-import { dataStore } from "@/lib/data-store"
 import type { Model } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Plus } from "lucide-react"
+import { supabase } from "@/src/integrations/supabase/client"
 
 export default function ModelsPage() {
   const [models, setModels] = useState<Model[]>([])
   const [isCreateOpen, setIsCreateOpen] = useState(false)
 
-  useEffect(() => {
-    if (dataStore) {
-      setModels(dataStore.getModels())
+  const mapRowToModel = (row: any): Model => {
+    const statusRaw = String(row.status || "pending").toLowerCase()
+    const status: Model["status"] =
+      statusRaw === "active" ? "ACTIVE" : statusRaw === "archived" ? "ARCHIVED" : "PENDING_CONSENT"
+
+    return {
+      id: row.id,
+      name: row.full_name,
+      internalId: row.id,
+      status,
+      planType: "DIGITAL",
+      consentGiven: status === "ACTIVE",
+      consentDate: status === "ACTIVE" ? new Date(row.created_at || Date.now()) : undefined,
+      createdAt: new Date(row.created_at || Date.now()),
+      updatedAt: new Date(row.created_at || Date.now()),
+      createdBy: row.user_id || "",
     }
+  }
+
+  const loadModels = async () => {
+    const { data, error } = await supabase
+      .from("models")
+      .select("id, full_name, status, created_at, user_id")
+      .order("created_at", { ascending: false })
+
+    if (error) return
+    setModels((data || []).map(mapRowToModel))
+  }
+
+  useEffect(() => {
+    loadModels()
   }, [])
 
   const handleCreate = (model: Model) => {
-    setModels(dataStore.getModels())
+    void loadModels()
     setIsCreateOpen(false)
   }
 
   const handleUpdate = () => {
-    setModels(dataStore.getModels())
+    void loadModels()
   }
 
   return (

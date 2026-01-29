@@ -4,8 +4,8 @@ import type React from "react"
 
 import { useState } from "react"
 import { useAuth } from "@/lib/auth-context"
-import { dataStore } from "@/lib/data-store"
 import type { Model, PlanType } from "@/lib/types"
+import { supabase } from "@/src/integrations/supabase/client"
 import {
   Dialog,
   DialogContent,
@@ -29,6 +29,7 @@ interface CreateModelDialogProps {
 export function CreateModelDialog({ open, onOpenChange, onCreated }: CreateModelDialogProps) {
   const { user } = useAuth()
   const [name, setName] = useState("")
+  const [email, setEmail] = useState("")
   const [internalId, setInternalId] = useState("")
   const [planType, setPlanType] = useState<PlanType>("DIGITAL")
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -39,34 +40,46 @@ export function CreateModelDialog({ open, onOpenChange, onCreated }: CreateModel
 
     setIsSubmitting(true)
 
-    // Generate internal ID if not provided
-    const finalInternalId = internalId || `INT-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}`
+    const { data, error } = await supabase
+      .from("models")
+      .insert({ full_name: name, email, status: "pending", user_id: null })
+      .select("id, full_name, status, created_at, user_id")
+      .maybeSingle()
 
-    const model = dataStore.createModel({
-      name,
-      internalId: finalInternalId,
+    if (error || !data) {
+      toast.error("Failed to create model", { description: error?.message })
+      setIsSubmitting(false)
+      return
+    }
+
+    // Best-effort audit log
+    await supabase.from("audit_logs").insert({
+      actor_id: user.id,
+      action: "MODEL_CREATED",
+      target_table: "models",
+      target_id: data.id,
+    })
+
+    const uiModel: Model = {
+      id: data.id,
+      name: data.full_name,
+      internalId: internalId || data.id,
       status: "PENDING_CONSENT",
       planType,
       consentGiven: false,
+      createdAt: new Date(data.created_at || Date.now()),
+      updatedAt: new Date(data.created_at || Date.now()),
       createdBy: user.id,
-    })
+    }
 
-    dataStore.addAuditLog({
-      userId: user.id,
-      userName: user.name,
-      action: "MODEL_CREATED",
-      modelId: model.id,
-    })
-
-    toast.success("Model created successfully", {
-      description: `Internal ID: ${model.internalId}`,
-    })
+    toast.success("Model created successfully")
 
     setName("")
+    setEmail("")
     setInternalId("")
     setPlanType("DIGITAL")
     setIsSubmitting(false)
-    onCreated(model)
+    onCreated(uiModel)
   }
 
   return (
@@ -87,6 +100,20 @@ export function CreateModelDialog({ open, onOpenChange, onCreated }: CreateModel
               onChange={(e) => setName(e.target.value)}
               required
               className="bg-input border-border"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              type="email"
+              placeholder="model@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="bg-input border-border"
+              autoComplete="email"
             />
           </div>
 
@@ -122,7 +149,7 @@ export function CreateModelDialog({ open, onOpenChange, onCreated }: CreateModel
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isSubmitting || !name}>
+            <Button type="submit" disabled={isSubmitting || !name || !email}>
               {isSubmitting ? "Creating..." : "Create Model"}
             </Button>
           </DialogFooter>
