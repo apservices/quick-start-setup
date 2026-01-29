@@ -25,12 +25,12 @@ export async function getAuthedUser(): Promise<SupabaseUser | null> {
 }
 
 export async function ensureProfileForUser(user: SupabaseUser): Promise<ProfileRow> {
-  // 1) Try to read profile via .single()
+  // 1) Try to read profile via .maybeSingle() (avoids hard error when 0 rows)
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("id, role, full_name")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!profileError && profile) return profile
 
@@ -48,7 +48,7 @@ export async function ensureProfileForUser(user: SupabaseUser): Promise<ProfileR
       .from("profiles")
       .select("id, role, full_name")
       .eq("id", user.id)
-      .single()
+      .maybeSingle()
 
     if (reReadError) throw reReadError
     if (!created) throw new Error("Profile provisioning failed: row not found after insert")
