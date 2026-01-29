@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { getSystemHealth, type SystemHealth } from "@/lib/system-logger"
+import { getSystemHealth } from "@/lib/system-logger"
+import type { SystemHealth } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { CheckCircle, AlertCircle, XCircle } from "lucide-react"
@@ -23,32 +24,34 @@ export function SystemStatus() {
 
   if (!health) return null
 
-  const statusIcon = {
+  const statusIcon: Record<SystemHealth["status"], React.ReactNode> = {
     healthy: <CheckCircle className="w-3 h-3 text-emerald-400" />,
     degraded: <AlertCircle className="w-3 h-3 text-amber-400" />,
     unhealthy: <XCircle className="w-3 h-3 text-rose-400" />,
   }
 
-  const statusColor = {
+  const statusColor: Record<SystemHealth["status"], string> = {
     healthy: "bg-emerald-500",
     degraded: "bg-amber-500",
     unhealthy: "bg-rose-500",
   }
+
+  const status = health.status
 
   return (
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
           <div className="flex items-center gap-2 px-2 py-1 rounded-md bg-muted/50 cursor-default">
-            <div className={cn("w-2 h-2 rounded-full animate-pulse", statusColor[health.status])} />
-            <span className="text-xs text-muted-foreground capitalize">{health.status}</span>
+            <div className={cn("w-2 h-2 rounded-full animate-pulse", statusColor[status])} />
+            <span className="text-xs text-muted-foreground capitalize">{status}</span>
           </div>
         </TooltipTrigger>
         <TooltipContent side="bottom" align="end" className="w-64">
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium">System Status</span>
-              {statusIcon[health.status]}
+              {statusIcon[status]}
             </div>
             <div className="space-y-2">
               {Object.entries(health.services).map(([service, status]) => (

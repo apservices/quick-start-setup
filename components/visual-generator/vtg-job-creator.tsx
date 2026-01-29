@@ -37,9 +37,9 @@ const licensedCategories: { value: VTGCategory; label: string; description: stri
 ]
 
 const priorityLabels: Record<PlanType, { label: string; priority: number }> = {
-  ENTERPRISE: { label: "High Priority", priority: 3 },
+  PHYSICAL: { label: "Standard Priority", priority: 1 },
+  DIGITAL: { label: "Standard Priority", priority: 1 },
   HYBRID: { label: "Medium Priority", priority: 2 },
-  BASIC: { label: "Standard Priority", priority: 1 },
 }
 
 export function VTGJobCreator({
@@ -57,6 +57,9 @@ export function VTGJobCreator({
   const availableCategories = mode === "PREVIEW" ? previewCategories : licensedCategories
   const priorityInfo = priorityLabels[planType]
 
+  // phase2Store currently models VTG job priority by plan type (BASIC/HYBRID/ENTERPRISE)
+  const vtgPlanType: "BASIC" | "HYBRID" | "ENTERPRISE" = planType === "HYBRID" ? "HYBRID" : "BASIC"
+
   const handleCreate = async () => {
     if (!user || !phase2Store) return
 
@@ -70,7 +73,7 @@ export function VTGJobCreator({
 
     setIsCreating(true)
     try {
-      phase2Store.createVTGJob(digitalTwinId, mode, category, user.id, planType)
+      phase2Store.createVTGJob(digitalTwinId, mode, category, user.id, vtgPlanType)
 
       toast.success("Job created", {
         description: `${mode} job queued with ${priorityInfo.label.toLowerCase()}.`,

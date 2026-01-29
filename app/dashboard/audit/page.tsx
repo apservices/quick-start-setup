@@ -36,7 +36,7 @@ import { format, isWithinInterval, startOfDay, endOfDay } from "date-fns"
 import { cn } from "@/lib/utils"
 import type { DateRange } from "react-day-picker"
 
-const ACTION_LABELS: Record<AuditAction, { label: string; color: string }> = {
+const ACTION_LABELS: Partial<Record<AuditAction, { label: string; color: string }>> = {
   USER_LOGIN: { label: "User Login", color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
   USER_LOGOUT: { label: "User Logout", color: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30" },
   USER_SESSION_REFRESH: { label: "Session Refresh", color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
@@ -79,6 +79,15 @@ const ACTION_LABELS: Record<AuditAction, { label: string; color: string }> = {
 }
 
 const ALL_ACTIONS = Object.keys(ACTION_LABELS) as AuditAction[]
+
+function getActionMeta(action: AuditAction): { label: string; color: string } {
+  return (
+    ACTION_LABELS[action] ?? {
+      label: action.replace(/_/g, " "),
+      color: "bg-muted text-muted-foreground border-border",
+    }
+  )
+}
 
 // Generate simple integrity hash for display
 function generateIntegrityHash(log: AuditLog): string {
@@ -396,7 +405,7 @@ export default function AuditLogsPage() {
                   <SelectItem value="ALL">All Actions</SelectItem>
                   {ALL_ACTIONS.map((action) => (
                     <SelectItem key={action} value={action}>
-                      {ACTION_LABELS[action].label}
+                      {getActionMeta(action).label}
                     </SelectItem>
                   ))}
                 </SelectContent>
