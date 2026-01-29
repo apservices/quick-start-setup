@@ -1,9 +1,11 @@
 "use client"
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react"
-import type { User, UserRole, AuditLog } from "./types"
+import type { Session, User as SupabaseUser } from "@supabase/supabase-js"
+import type { User, UserRole } from "./types"
 import { validateEmail, validatePassword, sanitizeEmail } from "./validation"
 import { systemLogger } from "./system-logger"
+import { supabase } from "@/src/integrations/supabase/client"
 
 interface AuthContextType {
   user: User | null
@@ -16,55 +18,6 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | null>(null)
-
-const DEMO_USERS: Record<string, { password: string; user: User }> = {
-  "admin@atlas.io": {
-    password: "admin123",
-    user: {
-      id: "usr_admin_001",
-      email: "admin@atlas.io",
-      name: "System Admin",
-      role: "ADMIN",
-      createdAt: new Date("2024-01-01"),
-      lastLoginAt: new Date(),
-    },
-  },
-  "operator@atlas.io": {
-    password: "operator123",
-    user: {
-      id: "usr_op_001",
-      email: "operator@atlas.io",
-      name: "Pipeline Operator",
-      role: "OPERATOR",
-      createdAt: new Date("2024-03-15"),
-      lastLoginAt: new Date(),
-    },
-  },
-  "model@atlas.io": {
-    password: "model123",
-    user: {
-      id: "usr_model_001",
-      email: "model@atlas.io",
-      name: "John Mitchell",
-      role: "MODEL",
-      linkedModelId: "mdl_001",
-      createdAt: new Date("2024-06-01"),
-      lastLoginAt: new Date(),
-    },
-  },
-  "client@atlas.io": {
-    password: "client123",
-    user: {
-      id: "usr_client_001",
-      email: "client@atlas.io",
-      name: "Brand Client",
-      role: "CLIENT",
-      linkedClientId: "client_001",
-      createdAt: new Date("2024-09-01"),
-      lastLoginAt: new Date(),
-    },
-  },
-}
 
 const ROLE_SCOPE_MAP: Record<UserRole, string[]> = {
   ADMIN: ["*"],
@@ -106,12 +59,64 @@ const SESSION_TIMEOUT = 30 * 60 * 1000
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
+  const [session, setSession] = useState<Session | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [sessionExpiry, setSessionExpiry] = useState<number | null>(null)
 
+  const mapDbRoleToAppRole = useCallback((role: string | null | undefined): UserRole => {
+    switch ((role || "").toLowerCase()) {
+      case "admin":
+        return "ADMIN"
+      case "operator":
+        return "OPERATOR"
+      case "client":
+        return "CLIENT"
+      case "model":
+      default:
+        return "MODEL"
+    }
+  }, [])
+
+  const ensureDefaultRole = useCallback(async (userId: string) => {
+    // Best-effort: assign default 'model' role if the user has no roles.
+    const { data: existing, error: readError } = await supabase
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId)
+      .limit(1)
+
+    if (readError) return
+    if (existing && existing.length > 0) return
+
+    await supabase.from("user_roles").insert({ user_id: userId, role: "model" })
+  }, [])
+
+  const buildUserFromSession = useCallback(
+    async (sbUser: SupabaseUser): Promise<User> => {
+      await ensureDefaultRole(sbUser.id)
+
+      const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", sbUser.id)
+      const primaryRole = roles?.[0]?.role ?? "model"
+
+      const nameFromMeta =
+        (typeof sbUser.user_metadata?.full_name === "string" && sbUser.user_metadata.full_name) ||
+        (typeof sbUser.user_metadata?.name === "string" && sbUser.user_metadata.name) ||
+        sbUser.email ||
+        "User"
+
+      return {
+        id: sbUser.id,
+        email: sbUser.email || "",
+        name: nameFromMeta,
+        role: mapDbRoleToAppRole(primaryRole),
+        createdAt: sbUser.created_at ? new Date(sbUser.created_at) : new Date(),
+        lastLoginAt: new Date(),
+      }
+    },
+    [ensureDefaultRole, mapDbRoleToAppRole],
+  )
+
   const validateSession = useCallback((): boolean => {
-    // Security: do not persist auth sessions in localStorage.
-    // Demo auth is kept in-memory only.
     if (!user) return false
     if (sessionExpiry && Date.now() > sessionExpiry) {
       setUser(null)
@@ -122,8 +127,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    setIsLoading(false)
-  }, [])
+    // IMPORTANT: listener first, then initial session fetch (prevents missing events)
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event: string, nextSession: Session | null) => {
+      setSession(nextSession)
+      if (nextSession?.user) {
+        // Defer any extra Supabase calls to avoid deadlocks.
+        setTimeout(() => {
+          buildUserFromSession(nextSession.user)
+            .then((u) => {
+              setUser(u)
+              setSessionExpiry(Date.now() + SESSION_TIMEOUT)
+            })
+            .catch(() => {
+              setUser(null)
+              setSessionExpiry(null)
+            })
+        }, 0)
+      } else {
+        setUser(null)
+        setSessionExpiry(null)
+      }
+    })
+
+    supabase.auth
+      .getSession()
+      .then(({ data }: { data: { session: Session | null } }) => {
+        setSession(data.session)
+        if (data.session?.user) {
+          return buildUserFromSession(data.session.user).then((u) => {
+            setUser(u)
+            setSessionExpiry(Date.now() + SESSION_TIMEOUT)
+          })
+        }
+        setUser(null)
+        setSessionExpiry(null)
+      })
+      .finally(() => setIsLoading(false))
+
+    return () => subscription.unsubscribe()
+  }, [buildUserFromSession])
 
   useEffect(() => {
     if (!sessionExpiry) return
@@ -154,37 +198,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const sanitizedEmail = sanitizeEmail(email)
 
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: sanitizedEmail,
+      password,
+    })
 
-    const userRecord = DEMO_USERS[sanitizedEmail]
-
-    if (!userRecord || userRecord.password !== password) {
+    if (error) {
       systemLogger?.warn("Failed login attempt", "Auth", { email: sanitizedEmail })
       setIsLoading(false)
-      return { success: false, error: "Invalid credentials" }
+      return { success: false, error: error.message }
     }
 
-    const loggedInUser = {
-      ...userRecord.user,
-      lastLoginAt: new Date(),
+    if (data.session?.user) {
+      setSession(data.session)
+      const u = await buildUserFromSession(data.session.user)
+      setUser(u)
+      setSessionExpiry(Date.now() + SESSION_TIMEOUT)
+      systemLogger?.info("User logged in", "Auth", { userId: u.id })
     }
 
-    const expiry = Date.now() + SESSION_TIMEOUT
-    setUser(loggedInUser)
-    setSessionExpiry(expiry)
-
-    // Security: do not persist session/audit logs to localStorage.
-    // (Audit logging should be moved server-side when Supabase Auth is enabled.)
-
-    systemLogger?.info("User logged in", "Auth", { userId: loggedInUser.id })
     setIsLoading(false)
     return { success: true }
   }, [])
 
   const logout = useCallback(() => {
     if (user) systemLogger?.info("User logged out", "Auth", { userId: user.id })
-
+    // Fire-and-forget
+    supabase.auth.signOut()
     setUser(null)
+    setSession(null)
     setSessionExpiry(null)
   }, [user])
 
