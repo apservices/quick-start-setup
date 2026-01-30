@@ -5,7 +5,7 @@
   "scripts": {
   "dev": "next dev",
   "build": "next build",
-  "build:dev": "npx serve -s . -l 5173", 
+  "build:dev": "cd lovable && npm install && npm run build:dev", 
   "start": "next start",
   "lint": "eslint ."
 },
