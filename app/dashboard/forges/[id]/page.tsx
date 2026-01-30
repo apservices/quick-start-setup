@@ -3,8 +3,7 @@
 import { useEffect, useState, useCallback } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { Header } from "@/components/dashboard/header"
-import { dataStore } from "@/lib/data-store"
-import type { Forge, Model } from "@/lib/types"
+import type { Forge } from "@/lib/types"
 import { ForgeStateMachine } from "@/lib/forge-state-machine"
 import { useAuth } from "@/lib/auth-context"
 import { getForgeActions } from "@/lib/rbac"
@@ -41,31 +40,94 @@ import {
 import { toast } from "sonner"
 import { format } from "date-fns"
 import Link from "next/link"
+import { supabase } from "@/src/integrations/supabase/client"
+
+type ForgeRow = {
+  id: string
+  model_id: string
+  state: string
+  version: number
+  digital_twin_id: string | null
+  seed_hash: string | null
+  capture_progress: number
+  created_at: string
+  updated_at: string
+  certified_at: string | null
+  created_by: string
+}
+
+type ModelRow = { id: string; full_name: string }
+
+type ModelMini = { id: string; name: string; internalId: string }
+
+function mapForgeRow(row: ForgeRow): Forge {
+  return {
+    id: row.id,
+    modelId: row.model_id,
+    state: (String(row.state || "CREATED").toUpperCase() as any) || "CREATED",
+    version: row.version ?? 1,
+    digitalTwinId: row.digital_twin_id ?? undefined,
+    seedHash: row.seed_hash ?? undefined,
+    captureProgress: row.capture_progress ?? 0,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+    certifiedAt: row.certified_at ? new Date(row.certified_at) : undefined,
+    createdBy: row.created_by,
+  }
+}
 
 export default function ForgeDetailPage() {
   const params = useParams()
   const router = useRouter()
   const { user } = useAuth()
   const [forge, setForge] = useState<Forge | null>(null)
-  const [model, setModel] = useState<Model | null>(null)
+  const [model, setModel] = useState<ModelMini | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isProcessing, setIsProcessing] = useState(false)
   const [confirmAction, setConfirmAction] = useState<"advance" | "rollback" | null>(null)
 
   const loadData = useCallback(() => {
     setIsLoading(true)
-    try {
-      if (dataStore && params.id) {
-        const f = dataStore.getForge(params.id as string)
-        if (f) {
-          setForge(f)
-          const m = dataStore.getModel(f.modelId)
-          if (m) setModel(m)
+
+    const run = async () => {
+      try {
+        if (!params.id) return
+
+        const { data: forgeRow, error: forgeError } = await supabase
+          .from("forges")
+          .select(
+            "id, model_id, state, version, digital_twin_id, seed_hash, capture_progress, created_at, updated_at, certified_at, created_by",
+          )
+          .eq("id", params.id as string)
+          .maybeSingle()
+
+        if (forgeError || !forgeRow) {
+          setForge(null)
+          setModel(null)
+          return
         }
+
+        const f = mapForgeRow(forgeRow as ForgeRow)
+        setForge(f)
+
+        const { data: modelRow } = await supabase
+          .from("models")
+          .select("id, full_name")
+          .eq("id", f.modelId)
+          .maybeSingle()
+
+        if (modelRow) {
+          const mr = modelRow as ModelRow
+          setModel({ id: mr.id, name: mr.full_name, internalId: mr.id })
+        } else {
+          setModel({ id: f.modelId, name: "Unknown Model", internalId: f.modelId })
+        }
+      } finally {
+        setIsLoading(false)
       }
-    } finally {
-      setIsLoading(false)
     }
+
+    void run()
   }, [params.id])
 
   useEffect(() => {
@@ -73,10 +135,7 @@ export default function ForgeDetailPage() {
   }, [loadData])
 
   const refreshForge = () => {
-    if (dataStore && params.id) {
-      const f = dataStore.getForge(params.id as string)
-      if (f) setForge(f)
-    }
+    // no-op for now; data is loaded from Supabase.
   }
 
   const handleAdvance = async () => {
@@ -85,32 +144,9 @@ export default function ForgeDetailPage() {
     setIsProcessing(true)
 
     try {
-      const stateMachine = new ForgeStateMachine(forge.state)
-      const nextState = stateMachine.getNextState()
-
-      if (!nextState) {
-        toast.error("Cannot advance from current state")
-        return
-      }
-
-      const result = dataStore.transitionForge(forge.id, nextState)
-
-      if (result.success) {
-        dataStore.addAuditLog({
-          userId: user.id,
-          userName: user.name,
-          action: "FORGE_STATE_CHANGED",
-          forgeId: forge.id,
-          modelId: forge.modelId,
-          metadata: { from: forge.state, to: nextState },
-        })
-        toast.success(`Advanced to ${nextState}`, {
-          description: ForgeStateMachine.getStateDescription(nextState),
-        })
-        refreshForge()
-      } else {
-        toast.error("Failed to advance", { description: result.error })
-      }
+      toast.info("Em breve", {
+        description: "A transição do pipeline ainda não está conectada ao Supabase nesta tela.",
+      })
     } finally {
       setIsProcessing(false)
       setConfirmAction(null)
@@ -123,30 +159,9 @@ export default function ForgeDetailPage() {
     setIsProcessing(true)
 
     try {
-      const stateMachine = new ForgeStateMachine(forge.state)
-      const prevState = stateMachine.getPreviousState()
-
-      if (!prevState) {
-        toast.error("Cannot rollback from current state")
-        return
-      }
-
-      const result = dataStore.transitionForge(forge.id, prevState)
-
-      if (result.success) {
-        dataStore.addAuditLog({
-          userId: user.id,
-          userName: user.name,
-          action: "FORGE_ROLLBACK",
-          forgeId: forge.id,
-          modelId: forge.modelId,
-          metadata: { from: forge.state, to: prevState },
-        })
-        toast.success(`Rolled back to ${prevState}`)
-        refreshForge()
-      } else {
-        toast.error("Failed to rollback", { description: result.error })
-      }
+      toast.info("Em breve", {
+        description: "A transição do pipeline ainda não está conectada ao Supabase nesta tela.",
+      })
     } finally {
       setIsProcessing(false)
       setConfirmAction(null)
@@ -317,7 +332,7 @@ export default function ForgeDetailPage() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Plan Type</span>
-                <Badge variant="outline">{model.planType}</Badge>
+                <Badge variant="outline">—</Badge>
               </div>
             </CardContent>
           </Card>
