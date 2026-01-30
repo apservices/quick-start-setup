@@ -1,19 +1,19 @@
+import path from "path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
+import { componentTagger } from "lovable-tagger";
 
-// Lovable requires a Vite config to initialize and run its build/publish pipeline.
-// This project uses Next.js for runtime, but providing this file unblocks Lovable tooling.
-export default defineConfig(() => {
-  return {
-    plugins: [react()],
-    server: {
-      port: 8080,
+// Lovable tooling expects a Vite config even for non-Vite runtime apps.
+// This config is for Lovable preview/build compatibility only.
+export default defineConfig(({ mode }) => ({
+  server: {
+    host: "::",
+    port: 8080,
+  },
+  plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
     },
-    resolve: {
-      // Keep @ pointing to project root to match existing TS/Next aliases.
-      alias: {
-        "@": new URL("./", import.meta.url).pathname,
-      },
-    },
-  };
-});
+  },
+}));
