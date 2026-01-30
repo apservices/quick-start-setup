@@ -1,15 +1,70 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Header } from "@/components/dashboard/header"
-import { dataStore } from "@/lib/data-store"
-import type { Model } from "@/lib/types"
+import type { Forge, ForgeState, Model } from "@/lib/types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { CaptureInterface } from "@/components/capture/capture-interface"
 import { Camera, AlertCircle, Shield, Loader2 } from "lucide-react"
+import { supabase } from "@/src/integrations/supabase/client"
+
+type ForgeRow = {
+  id: string
+  model_id: string
+  state: string
+  version: number
+  digital_twin_id: string | null
+  seed_hash: string | null
+  capture_progress: number
+  created_at: string
+  updated_at: string
+  certified_at: string | null
+  created_by: string
+}
+
+type ModelRow = {
+  id: string
+  full_name: string
+  status: string | null
+  created_at: string | null
+  user_id: string | null
+}
+
+function mapForgeRow(row: ForgeRow): Forge {
+  return {
+    id: row.id,
+    modelId: row.model_id,
+    state: (String(row.state || "CREATED").toUpperCase() as ForgeState) || "CREATED",
+    version: row.version ?? 1,
+    digitalTwinId: row.digital_twin_id ?? undefined,
+    seedHash: row.seed_hash ?? undefined,
+    captureProgress: row.capture_progress ?? 0,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+    certifiedAt: row.certified_at ? new Date(row.certified_at) : undefined,
+    createdBy: row.created_by,
+  }
+}
+
+function mapModelRow(row: ModelRow): Model {
+  const statusRaw = String(row.status || "pending").toLowerCase()
+  const status: Model["status"] = statusRaw === "active" ? "ACTIVE" : statusRaw === "archived" ? "ARCHIVED" : "PENDING_CONSENT"
+  return {
+    id: row.id,
+    name: row.full_name,
+    internalId: row.id,
+    status,
+    planType: "DIGITAL",
+    consentGiven: status === "ACTIVE",
+    consentDate: status === "ACTIVE" ? new Date(row.created_at || Date.now()) : undefined,
+    createdAt: new Date(row.created_at || Date.now()),
+    updatedAt: new Date(row.created_at || Date.now()),
+    createdBy: row.user_id || "",
+  }
+}
 
 export default function CapturePage() {
   const router = useRouter()
@@ -17,29 +72,58 @@ export default function CapturePage() {
   const [selectedForgeId, setSelectedForgeId] = useState<string>("")
   const [isInitialized, setIsInitialized] = useState(false)
 
-  const forges = useMemo(() => {
-    if (!dataStore) return []
-    return dataStore.getForges().filter((f) => f.state === "CREATED" || f.state === "CAPTURED")
-  }, [isInitialized])
-
-  const models = useMemo(() => {
-    if (!dataStore) return new Map<string, Model>()
-    const modelMap = new Map<string, Model>()
-    dataStore.getModels().forEach((m) => modelMap.set(m.id, m))
-    return modelMap
-  }, [isInitialized])
+  const [forges, setForges] = useState<Forge[]>([])
+  const [models, setModels] = useState<Map<string, Model>>(new Map())
 
   useEffect(() => {
-    if (!dataStore || isInitialized) return
+    if (isInitialized) return
 
-    const forgeIdFromUrl = searchParams.get("forge")
-    const availableForges = dataStore.getForges().filter((f) => f.state === "CREATED" || f.state === "CAPTURED")
+    const load = async () => {
+      const { data: forgeRows, error: forgeError } = await supabase
+        .from("forges")
+        .select(
+          "id, model_id, state, version, digital_twin_id, seed_hash, capture_progress, created_at, updated_at, certified_at, created_by",
+        )
+        .in("state", ["CREATED", "CAPTURED"]) // eligible for capture UI
+        .order("created_at", { ascending: false })
 
-    if (forgeIdFromUrl && availableForges.some((f) => f.id === forgeIdFromUrl)) {
-      setSelectedForgeId(forgeIdFromUrl)
+      if (forgeError) {
+        setForges([])
+        setModels(new Map())
+        setIsInitialized(true)
+        return
+      }
+
+      const mappedForges = ((forgeRows ?? []) as ForgeRow[]).map(mapForgeRow)
+      setForges(mappedForges)
+
+      const modelIds = Array.from(new Set(mappedForges.map((f) => f.modelId).filter(Boolean)))
+      if (modelIds.length > 0) {
+        const { data: modelRows, error: modelError } = await supabase
+          .from("models")
+          .select("id, full_name, status, created_at, user_id")
+          .in("id", modelIds)
+
+        if (!modelError) {
+          const modelMap = new Map<string, Model>()
+          ;((modelRows ?? []) as ModelRow[]).forEach((r) => modelMap.set(r.id, mapModelRow(r)))
+          setModels(modelMap)
+        } else {
+          setModels(new Map())
+        }
+      } else {
+        setModels(new Map())
+      }
+
+      const forgeIdFromUrl = searchParams.get("forge")
+      if (forgeIdFromUrl && mappedForges.some((f) => f.id === forgeIdFromUrl)) {
+        setSelectedForgeId(forgeIdFromUrl)
+      }
+
+      setIsInitialized(true)
     }
 
-    setIsInitialized(true)
+    void load()
   }, [searchParams, isInitialized])
 
   const selectedForge = forges.find((f) => f.id === selectedForgeId)
