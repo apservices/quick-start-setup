@@ -1,0 +1,7 @@
+{
+  "name": "lovable-build-wrapper",
+  "private": true,
+  "scripts": {
+    "build:dev": "npm --prefix .. run build"
+  }
+}
