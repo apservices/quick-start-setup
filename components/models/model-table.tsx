@@ -53,6 +53,7 @@ export function ModelTable({ models, onUpdate }: ModelTableProps) {
   const [editModel, setEditModel] = useState<Model | null>(null)
   const [consentModel, setConsentModel] = useState<Model | null>(null)
   const [archiveModel, setArchiveModel] = useState<Model | null>(null)
+  const [startingForgeModelId, setStartingForgeModelId] = useState<string | null>(null)
 
   const handleArchive = async () => {
     if (!archiveModel || !user) return
@@ -75,9 +76,68 @@ export function ModelTable({ models, onUpdate }: ModelTableProps) {
     onUpdate()
   }
 
-  const handleStartForge = (model: Model) => {
-    // TODO: Forge pipeline persistence will be migrated to Supabase.
-    toast.info("Forge creation will be enabled once the forge pipeline is backed by Supabase.")
+  const handleStartForge = async (model: Model) => {
+    if (!user) return
+
+    // RLS: only admin/operator can manage forges.
+    if (user.role !== "ADMIN" && user.role !== "OPERATOR") {
+      toast.error("Sem permissão", {
+        description: "Apenas ADMIN/OPERATOR pode iniciar uma forge.",
+      })
+      return
+    }
+
+    setStartingForgeModelId(model.id)
+    try {
+      // Avoid creating duplicates: if a forge already exists for this model, just inform.
+      const { data: existing, error: existingError } = await supabase
+        .from("forges")
+        .select("id,state,created_at")
+        .eq("model_id", model.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (existingError) throw existingError
+
+      if (existing?.id) {
+        toast.info("Forge já existe", {
+          description: `Já existe uma forge para este modelo (state: ${existing.state}).`,
+        })
+        return
+      }
+
+      const { data: inserted, error: insertError } = await supabase
+        .from("forges")
+        .insert({
+          model_id: model.id,
+          created_by: user.id,
+          state: "CREATED",
+          capture_progress: 0,
+          version: 1,
+        })
+        .select("id")
+        .single()
+
+      if (insertError) throw insertError
+
+      await supabase.from("audit_logs").insert({
+        actor_id: user.id,
+        action: "FORGE_CREATED",
+        target_table: "forges",
+        target_id: inserted.id,
+      })
+
+      toast.success("Forge iniciada", {
+        description: "Registro criado em forges e pronto para seguir o pipeline.",
+      })
+      onUpdate()
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e))
+      toast.error("Falha ao iniciar forge", { description: err.message })
+    } finally {
+      setStartingForgeModelId(null)
+    }
   }
 
   if (models.length === 0) {
@@ -147,7 +207,10 @@ export function ModelTable({ models, onUpdate }: ModelTableProps) {
                         </DropdownMenuItem>
                       )}
                       {model.consentGiven && model.status === "ACTIVE" && (
-                        <DropdownMenuItem onClick={() => handleStartForge(model)}>
+                        <DropdownMenuItem
+                          onClick={() => void handleStartForge(model)}
+                          disabled={startingForgeModelId === model.id}
+                        >
                           <Workflow className="w-4 h-4 mr-2" />
                           Start Forge
                         </DropdownMenuItem>
