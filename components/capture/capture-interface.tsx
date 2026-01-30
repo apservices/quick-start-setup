@@ -1,9 +1,8 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useEffect, useMemo, useState, useCallback } from "react"
 import type { Forge, Model, CaptureAngle } from "@/lib/types"
 import { CAPTURE_ANGLES } from "@/lib/types"
-import { dataStore } from "@/lib/data-store"
 import { useAuth } from "@/lib/auth-context"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -14,6 +13,7 @@ import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { CaptureModeSelector, type CaptureMode } from "./capture-mode-selector"
 import { GuidedCaptureInterface } from "./guided-capture-interface"
+import { supabase } from "@/src/integrations/supabase/client"
 
 interface CaptureInterfaceProps {
   forge: Forge
@@ -43,10 +43,52 @@ export function CaptureInterface({ forge, model, onComplete }: CaptureInterfaceP
   const [isUploading, setIsUploading] = useState(false)
   const [currentAngleIndex, setCurrentAngleIndex] = useState(forge.captureProgress)
 
-  const progress = uploadedFiles.size
+  const requiredAngles = useMemo(() => REQUIRED_ANGLES, [])
+
+  // Sync progress from DB (captures table is source-of-truth)
+  useEffect(() => {
+    const loadProgress = async () => {
+      const { count, error } = await supabase
+        .from("captures")
+        .select("id", { count: "exact", head: true })
+        .eq("model_id", forge.modelId)
+
+      if (error) return
+      const c = Math.min(count ?? 0, 54)
+      setCurrentAngleIndex(c)
+    }
+
+    void loadProgress()
+  }, [forge.modelId])
+
+  const progress = Math.max(currentAngleIndex, uploadedFiles.size)
   const progressPercent = (progress / 54) * 100
   const isComplete = progress >= 54
-  const currentAngle = REQUIRED_ANGLES[currentAngleIndex]
+  const currentAngle = requiredAngles[currentAngleIndex]
+
+  const uploadToSupabase = async (file: File, angle: string) => {
+    // Upload to public bucket 'captures'
+    const ext = file.type === "image/png" ? "png" : "jpg"
+    const objectPath = `${forge.modelId}/${forge.id}/${crypto.randomUUID()}_${angle}.${ext}`
+
+    const { error: uploadError } = await supabase.storage.from("captures").upload(objectPath, file, {
+      contentType: file.type,
+      upsert: false,
+    })
+    if (uploadError) throw uploadError
+
+    const { data: publicUrl } = supabase.storage.from("captures").getPublicUrl(objectPath)
+    const assetUrl = publicUrl.publicUrl
+
+    const { error: insertError } = await supabase.from("captures").insert({
+      model_id: forge.modelId,
+      asset_url: assetUrl,
+      status: "pending",
+    })
+    if (insertError) throw insertError
+
+    return assetUrl
+  }
 
   const validateFile = async (
     file: File,
@@ -91,9 +133,9 @@ export function CaptureInterface({ forge, model, onComplete }: CaptureInterfaceP
       const updatedFiles = new Map(uploadedFiles)
 
       for (const file of Array.from(files)) {
-        if (angleIndex >= REQUIRED_ANGLES.length) break
+        if (angleIndex >= requiredAngles.length) break
 
-        const angle = REQUIRED_ANGLES[angleIndex]
+        const angle = requiredAngles[angleIndex]
         const validation = await validateFile(file)
 
         if (!validation.valid || !validation.resolution) {
@@ -101,18 +143,13 @@ export function CaptureInterface({ forge, model, onComplete }: CaptureInterfaceP
           continue
         }
 
-        dataStore.addCaptureAsset(forge.id, {
-          forgeId: forge.id,
-          angle,
-          fileName: file.name,
-          fileSize: file.size,
-          mimeType: file.type,
-          resolution: validation.resolution,
-          type: "PHOTO",
-          stage: "CAPTURE",
-          status: "VALID",
-          fileUrl: URL.createObjectURL(file),
-        })
+        try {
+          await uploadToSupabase(file, String(angle))
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e))
+          toast.error("Upload falhou", { description: err.message })
+          continue
+        }
 
         updatedFiles.set(angle, {
           angle,
@@ -126,7 +163,9 @@ export function CaptureInterface({ forge, model, onComplete }: CaptureInterfaceP
 
       setUploadedFiles(updatedFiles)
       setCurrentAngleIndex(angleIndex)
-      dataStore.updateForgeCapture(forge.id, updatedFiles.size)
+
+      // Persist capture_progress in forges
+      await supabase.from("forges").update({ capture_progress: updatedFiles.size, updated_at: new Date().toISOString() }).eq("id", forge.id)
 
       toast.success("Upload complete", {
         description: `${updatedFiles.size}/54 captures uploaded`,
@@ -134,7 +173,7 @@ export function CaptureInterface({ forge, model, onComplete }: CaptureInterfaceP
 
       setIsUploading(false)
     },
-    [user, forge.id, uploadedFiles, currentAngleIndex],
+    [user, forge.id, forge.modelId, uploadedFiles, currentAngleIndex, requiredAngles],
   )
 
   if (!captureMode) {

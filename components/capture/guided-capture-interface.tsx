@@ -10,7 +10,6 @@ import {
   type CaptureSession,
   type GuidedCaptureStepId,
 } from "@/lib/capture-session"
-import { dataStore } from "@/lib/data-store"
 import { useAuth } from "@/lib/auth-context"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -33,6 +32,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
+import { supabase } from "@/src/integrations/supabase/client"
 
 interface GuidedCaptureInterfaceProps {
   forge: Forge
@@ -166,29 +166,36 @@ export function GuidedCaptureInterface({ forge, model, onComplete, onBack }: Gui
 
       captureSessionManager.addCapturedImage(session.id, currentStep.id, imageData, true)
 
-      dataStore.addCaptureAsset(forge.id, {
-        forgeId: forge.id,
-        angle: currentStep.id,
-        fileName: `capture_${currentStep.id}.jpg`,
-        fileSize: Math.round((imageData.length * 3) / 4),
-        mimeType: "image/jpeg",
-        resolution: { width: canvas.width, height: canvas.height },
-        type: "PHOTO",
-        stage: "CAPTURE",
-        status: "VALID",
-        fileUrl: imageData,
-      })
+      // Upload captured image to Storage bucket 'captures' and insert DB row
+      const blob = await fetch(imageData).then((r) => r.blob())
+      const file = new File([blob], `capture_${currentStep.id}.jpg`, { type: "image/jpeg" })
+      const objectPath = `${forge.modelId}/${forge.id}/${crypto.randomUUID()}_${currentStep.id}.jpg`
 
-      dataStore.addAuditLog({
-        userId: user.id,
-        userName: user.name,
-        action: "CAPTURE_UPLOADED",
-        forgeId: forge.id,
-        modelId: model.id,
-        metadata: { angle: currentStep.id, mode: "GUIDED" },
+      const { error: uploadError } = await supabase.storage.from("captures").upload(objectPath, file, {
+        contentType: "image/jpeg",
+        upsert: false,
       })
+      if (uploadError) throw uploadError
 
-      dataStore.updateForgeCapture(forge.id, completedSteps.length + 1)
+      const { data: publicUrl } = supabase.storage.from("captures").getPublicUrl(objectPath)
+      const assetUrl = publicUrl.publicUrl
+
+      const { error: insertError } = await supabase.from("captures").insert({
+        model_id: forge.modelId,
+        asset_url: assetUrl,
+        status: "pending",
+      })
+      if (insertError) throw insertError
+
+      await supabase
+        .from("audit_logs")
+        .insert({ actor_id: user.id, action: "CAPTURE_UPLOADED", target_table: "captures", target_id: null })
+
+      const nextProgress = Math.min(completedSteps.length + 1, 54)
+      await supabase
+        .from("forges")
+        .update({ capture_progress: nextProgress, updated_at: new Date().toISOString() })
+        .eq("id", forge.id)
 
       const updated = captureSessionManager.getSession(session.id)
       if (updated) setSession({ ...updated })
@@ -220,19 +227,24 @@ export function GuidedCaptureInterface({ forge, model, onComplete, onBack }: Gui
 
     captureSessionManager.completeSession(session.id)
 
-    const result = dataStore.transitionForge(forge.id, "CAPTURED")
-    if (result.success) {
-      dataStore.addAuditLog({
-        userId: user.id,
-        userName: user.name,
-        action: "FORGE_STATE_CHANGED",
-        forgeId: forge.id,
-        modelId: model.id,
-        metadata: { from: "CREATED", to: "CAPTURED", captureMode: "GUIDED" },
-      })
-    }
+    // Only update state if still in CREATED
+    void (async () => {
+      try {
+        await supabase
+          .from("forges")
+          .update({ state: "CAPTURED", updated_at: new Date().toISOString() })
+          .eq("id", forge.id)
 
-    onComplete()
+        await supabase.from("audit_logs").insert({
+          actor_id: user.id,
+          action: "FORGE_STATE_CHANGED",
+          target_table: "forges",
+          target_id: forge.id,
+        })
+      } finally {
+        onComplete()
+      }
+    })()
   }
 
   /* -------------------- CAMERA ERROR -------------------- */
