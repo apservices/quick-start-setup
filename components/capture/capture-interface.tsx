@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils"
 import { CaptureModeSelector, type CaptureMode } from "./capture-mode-selector"
 import { GuidedCaptureInterface } from "./guided-capture-interface"
 import { supabase } from "@/src/integrations/supabase/client"
+import { uploadCaptureToSupabase } from "@/lib/upload-capture"
 
 interface CaptureInterfaceProps {
   forge: Forge
@@ -67,26 +68,12 @@ export function CaptureInterface({ forge, model, onComplete }: CaptureInterfaceP
   const currentAngle = requiredAngles[currentAngleIndex]
 
   const uploadToSupabase = async (file: File, angle: string) => {
-    // Upload to public bucket 'captures'
-    const ext = file.type === "image/png" ? "png" : "jpg"
-    const objectPath = `${forge.modelId}/${forge.id}/${crypto.randomUUID()}_${angle}.${ext}`
-
-    const { error: uploadError } = await supabase.storage.from("captures").upload(objectPath, file, {
-      contentType: file.type,
-      upsert: false,
+    const { assetUrl } = await uploadCaptureToSupabase({
+      file,
+      modelId: forge.modelId,
+      forgeId: forge.id,
+      angle,
     })
-    if (uploadError) throw uploadError
-
-    const { data: publicUrl } = supabase.storage.from("captures").getPublicUrl(objectPath)
-    const assetUrl = publicUrl.publicUrl
-
-    const { error: insertError } = await supabase.from("captures").insert({
-      model_id: forge.modelId,
-      asset_url: assetUrl,
-      status: "pending",
-    })
-    if (insertError) throw insertError
-
     return assetUrl
   }
 
