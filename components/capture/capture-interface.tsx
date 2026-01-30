@@ -90,6 +90,16 @@ export function CaptureInterface({ forge, model, onComplete }: CaptureInterfaceP
     return assetUrl
   }
 
+  const getCaptureCountForModel = useCallback(async () => {
+    const { count, error } = await supabase
+      .from("captures")
+      .select("id", { count: "exact", head: true })
+      .eq("model_id", forge.modelId)
+
+    if (error) throw error
+    return Math.min(count ?? 0, 54)
+  }, [forge.modelId])
+
   const validateFile = async (
     file: File,
   ): Promise<{ valid: boolean; error?: string; resolution?: { width: number; height: number } }> => {
@@ -164,8 +174,17 @@ export function CaptureInterface({ forge, model, onComplete }: CaptureInterfaceP
       setUploadedFiles(updatedFiles)
       setCurrentAngleIndex(angleIndex)
 
-      // Persist capture_progress in forges
-      await supabase.from("forges").update({ capture_progress: updatedFiles.size, updated_at: new Date().toISOString() }).eq("id", forge.id)
+      // Source-of-truth: persist capture_progress based on DB count (not just current session)
+      try {
+        const dbCount = await getCaptureCountForModel()
+        setCurrentAngleIndex(dbCount)
+        await supabase
+          .from("forges")
+          .update({ capture_progress: dbCount, updated_at: new Date().toISOString() })
+          .eq("id", forge.id)
+      } catch {
+        // If count fails, don't block UX; progress will resync on next mount
+      }
 
       toast.success("Upload complete", {
         description: `${updatedFiles.size}/54 captures uploaded`,
@@ -173,7 +192,7 @@ export function CaptureInterface({ forge, model, onComplete }: CaptureInterfaceP
 
       setIsUploading(false)
     },
-    [user, forge.id, forge.modelId, uploadedFiles, currentAngleIndex, requiredAngles],
+    [user, forge.id, forge.modelId, uploadedFiles, currentAngleIndex, requiredAngles, getCaptureCountForModel],
   )
 
   if (!captureMode) {

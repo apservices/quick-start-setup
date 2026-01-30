@@ -191,7 +191,14 @@ export function GuidedCaptureInterface({ forge, model, onComplete, onBack }: Gui
         .from("audit_logs")
         .insert({ actor_id: user.id, action: "CAPTURE_UPLOADED", target_table: "captures", target_id: null })
 
-      const nextProgress = Math.min(completedSteps.length + 1, 54)
+      // Source-of-truth: persist capture_progress based on DB count
+      const { count, error: countError } = await supabase
+        .from("captures")
+        .select("id", { count: "exact", head: true })
+        .eq("model_id", forge.modelId)
+      if (countError) throw countError
+
+      const nextProgress = Math.min(count ?? 0, 54)
       await supabase
         .from("forges")
         .update({ capture_progress: nextProgress, updated_at: new Date().toISOString() })
@@ -211,7 +218,7 @@ export function GuidedCaptureInterface({ forge, model, onComplete, onBack }: Gui
       setIsCapturing(false)
       setIsValidating(false)
     }
-  }, [session, user, currentStep, forge.id, model.id, completedSteps.length, isLastStep])
+   }, [session, user, currentStep, forge.id, forge.modelId, model.id, completedSteps.length, isLastStep])
 
   const handleNextStep = () => {
     if (!session) return
