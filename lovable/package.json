@@ -2,7 +2,7 @@
   "name": "lovable-preview",
   "private": true,
   "scripts": {
-    "build:dev": "npx serve -s . -l 5173"
+    "build:dev": "npx serve -s . -l 8080"
   },
   "devDependencies": {
     "serve": "^14.2.0"
