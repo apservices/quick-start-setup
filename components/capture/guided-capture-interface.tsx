@@ -33,6 +33,7 @@ import {
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { supabase } from "@/src/integrations/supabase/client"
+import { uploadCaptureToSupabase } from "@/lib/upload-capture"
 
 interface GuidedCaptureInterfaceProps {
   forge: Forge
@@ -166,26 +167,15 @@ export function GuidedCaptureInterface({ forge, model, onComplete, onBack }: Gui
 
       captureSessionManager.addCapturedImage(session.id, currentStep.id, imageData, true)
 
-      // Upload captured image to Storage bucket 'captures' and insert DB row
-      const blob = await fetch(imageData).then((r) => r.blob())
-      const file = new File([blob], `capture_${currentStep.id}.jpg`, { type: "image/jpeg" })
-      const objectPath = `${forge.modelId}/${forge.id}/${crypto.randomUUID()}_${currentStep.id}.jpg`
-
-      const { error: uploadError } = await supabase.storage.from("captures").upload(objectPath, file, {
-        contentType: "image/jpeg",
-        upsert: false,
-      })
-      if (uploadError) throw uploadError
-
-      const { data: publicUrl } = supabase.storage.from("captures").getPublicUrl(objectPath)
-      const assetUrl = publicUrl.publicUrl
-
-      const { error: insertError } = await supabase.from("captures").insert({
-        model_id: forge.modelId,
-        asset_url: assetUrl,
-        status: "pending",
-      })
-      if (insertError) throw insertError
+       // Upload captured image + insert DB row via Edge Function (Service Role)
+       const blob = await fetch(imageData).then((r) => r.blob())
+       const file = new File([blob], `capture_${currentStep.id}.jpg`, { type: "image/jpeg" })
+       await uploadCaptureToSupabase({
+         file,
+         modelId: forge.modelId,
+         forgeId: forge.id,
+         angle: currentStep.id,
+       })
 
       await supabase
         .from("audit_logs")
