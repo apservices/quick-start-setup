@@ -3,8 +3,7 @@
 import { useState, useEffect } from "react"
 import Link from "next/link"
 import { Header } from "@/components/dashboard/header"
-import { dataStore } from "@/lib/data-store"
-import type { Forge, Model } from "@/lib/types"
+import type { Forge } from "@/lib/types"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -14,22 +13,96 @@ import { Search, Workflow, ArrowRight, Filter } from "lucide-react"
 import { format } from "date-fns"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { FORGE_STATES, type ForgeState } from "@/lib/types"
+import { supabase } from "@/src/integrations/supabase/client"
+
+type ForgeRow = {
+  id: string
+  model_id: string
+  state: string
+  version: number
+  digital_twin_id: string | null
+  seed_hash: string | null
+  capture_progress: number
+  created_at: string
+  updated_at: string
+  certified_at: string | null
+  created_by: string
+}
+
+type ModelRow = {
+  id: string
+  full_name: string
+}
+
+type ModelMini = {
+  name: string
+  internalId: string
+}
+
+function mapForgeRow(row: ForgeRow): Forge {
+  return {
+    id: row.id,
+    modelId: row.model_id,
+    state: (String(row.state || "CREATED").toUpperCase() as ForgeState) || "CREATED",
+    version: row.version ?? 1,
+    digitalTwinId: row.digital_twin_id ?? undefined,
+    seedHash: row.seed_hash ?? undefined,
+    captureProgress: row.capture_progress ?? 0,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+    certifiedAt: row.certified_at ? new Date(row.certified_at) : undefined,
+    createdBy: row.created_by,
+  }
+}
 
 export default function ForgesPage() {
   const [forges, setForges] = useState<Forge[]>([])
-  const [models, setModels] = useState<Map<string, Model>>(new Map())
+  const [models, setModels] = useState<Map<string, ModelMini>>(new Map())
   const [search, setSearch] = useState("")
   const [stateFilter, setStateFilter] = useState<ForgeState | "ALL">("ALL")
 
   useEffect(() => {
-    if (dataStore) {
-      const allForges = dataStore.getForges()
-      setForges(allForges)
+    const load = async () => {
+      const { data: forgeRows, error: forgeError } = await supabase
+        .from("forges")
+        .select(
+          "id, model_id, state, version, digital_twin_id, seed_hash, capture_progress, created_at, updated_at, certified_at, created_by",
+        )
+        .order("created_at", { ascending: false })
 
-      const modelMap = new Map<string, Model>()
-      dataStore.getModels().forEach((m) => modelMap.set(m.id, m))
+      if (forgeError) {
+        setForges([])
+        setModels(new Map())
+        return
+      }
+
+      const mapped = (forgeRows as ForgeRow[] | null | undefined)?.map(mapForgeRow) ?? []
+      setForges(mapped)
+
+      const modelIds = Array.from(new Set(mapped.map((f) => f.modelId).filter(Boolean)))
+      if (modelIds.length === 0) {
+        setModels(new Map())
+        return
+      }
+
+      const { data: modelRows, error: modelError } = await supabase
+        .from("models")
+        .select("id, full_name")
+        .in("id", modelIds)
+
+      if (modelError) {
+        setModels(new Map())
+        return
+      }
+
+      const modelMap = new Map<string, ModelMini>()
+      ;((modelRows ?? []) as ModelRow[]).forEach((m) => {
+        modelMap.set(m.id, { name: m.full_name, internalId: m.id })
+      })
       setModels(modelMap)
     }
+
+    void load()
   }, [])
 
   const filteredForges = forges.filter((forge) => {
@@ -100,7 +173,7 @@ export default function ForgesPage() {
                         <div>
                           <p className="font-mono text-sm text-muted-foreground">{forge.id}</p>
                           <p className="font-medium text-foreground mt-1">{model?.name || "Unknown Model"}</p>
-                          <p className="text-xs text-muted-foreground">{model?.internalId}</p>
+                          <p className="text-xs text-muted-foreground">{model?.internalId || forge.modelId}</p>
                         </div>
                         <StateBadge state={forge.state} />
                       </div>

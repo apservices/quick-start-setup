@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import type { Model } from "@/lib/types"
 import { useAuth } from "@/lib/auth-context"
 import { supabase } from "@/src/integrations/supabase/client"
@@ -50,6 +51,7 @@ const planColors = {
 
 export function ModelTable({ models, onUpdate }: ModelTableProps) {
   const { user } = useAuth()
+  const router = useRouter()
   const [editModel, setEditModel] = useState<Model | null>(null)
   const [consentModel, setConsentModel] = useState<Model | null>(null)
   const [archiveModel, setArchiveModel] = useState<Model | null>(null)
@@ -104,6 +106,7 @@ export function ModelTable({ models, onUpdate }: ModelTableProps) {
         toast.info("Forge já existe", {
           description: `Já existe uma forge para este modelo (state: ${existing.state}).`,
         })
+        router.push("/dashboard/forges")
         return
       }
 
@@ -132,6 +135,7 @@ export function ModelTable({ models, onUpdate }: ModelTableProps) {
         description: "Registro criado em forges e pronto para seguir o pipeline.",
       })
       onUpdate()
+      router.push("/dashboard/forges")
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e))
       toast.error("Falha ao iniciar forge", { description: err.message })
