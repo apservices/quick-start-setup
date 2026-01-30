@@ -130,12 +130,16 @@ export default function ForgeDetailPage() {
     void run()
   }, [params.id])
 
+  const reload = useCallback(() => {
+    loadData()
+  }, [loadData])
+
   useEffect(() => {
     loadData()
   }, [loadData])
 
   const refreshForge = () => {
-    // no-op for now; data is loaded from Supabase.
+    reload()
   }
 
   const handleAdvance = async () => {
@@ -144,9 +148,54 @@ export default function ForgeDetailPage() {
     setIsProcessing(true)
 
     try {
-      toast.info("Em breve", {
-        description: "A transição do pipeline ainda não está conectada ao Supabase nesta tela.",
+      // RLS: only admin/operator can update forges
+      if (user.role !== "ADMIN" && user.role !== "OPERATOR") {
+        toast.error("Sem permissão", {
+          description: "Apenas ADMIN/OPERATOR pode avançar etapas da forge.",
+        })
+        return
+      }
+
+      const sm = new ForgeStateMachine(forge.state)
+      const nextState = sm.getNextState()
+      if (!nextState) {
+        toast.error("Não é possível avançar", { description: "A forge já está no último estado." })
+        return
+      }
+
+      const validation = sm.validateTransition(nextState)
+      if (!validation.valid) {
+        toast.error("Transição inválida", { description: validation.error })
+        return
+      }
+
+      const nowIso = new Date().toISOString()
+      const updatePayload: Record<string, unknown> = {
+        state: nextState,
+        updated_at: nowIso,
+      }
+      if (nextState === "CERTIFIED") {
+        updatePayload.certified_at = nowIso
+      }
+
+      const { error: updateError } = await supabase.from("forges").update(updatePayload).eq("id", forge.id)
+      if (updateError) throw updateError
+
+      await supabase.from("audit_logs").insert({
+        actor_id: user.id,
+        action: "FORGE_STATE_CHANGED",
+        target_table: "forges",
+        target_id: forge.id,
       })
+
+      toast.success(`Avançou para ${nextState}`, {
+        description: ForgeStateMachine.getStateDescription(nextState),
+      })
+
+      refreshForge()
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e))
+      toast.error("Falha ao avançar", { description: err.message })
     } finally {
       setIsProcessing(false)
       setConfirmAction(null)
@@ -159,9 +208,53 @@ export default function ForgeDetailPage() {
     setIsProcessing(true)
 
     try {
-      toast.info("Em breve", {
-        description: "A transição do pipeline ainda não está conectada ao Supabase nesta tela.",
+      // RLS: only admin/operator can update forges
+      if (user.role !== "ADMIN" && user.role !== "OPERATOR") {
+        toast.error("Sem permissão", {
+          description: "Apenas ADMIN/OPERATOR pode fazer rollback da forge.",
+        })
+        return
+      }
+
+      const sm = new ForgeStateMachine(forge.state)
+      const prevState = sm.getPreviousState()
+      if (!prevState) {
+        toast.error("Não é possível rollback", { description: "A forge já está no primeiro estado." })
+        return
+      }
+
+      const validation = sm.validateTransition(prevState)
+      if (!validation.valid) {
+        toast.error("Transição inválida", { description: validation.error })
+        return
+      }
+
+      if (forge.state === "CERTIFIED") {
+        toast.error("Forge certificada", { description: "Forges certificadas são somente leitura." })
+        return
+      }
+
+      const nowIso = new Date().toISOString()
+      const updatePayload: Record<string, unknown> = {
+        state: prevState,
+        updated_at: nowIso,
+      }
+
+      const { error: updateError } = await supabase.from("forges").update(updatePayload).eq("id", forge.id)
+      if (updateError) throw updateError
+
+      await supabase.from("audit_logs").insert({
+        actor_id: user.id,
+        action: "FORGE_ROLLBACK",
+        target_table: "forges",
+        target_id: forge.id,
       })
+
+      toast.success(`Rollback para ${prevState}`)
+      refreshForge()
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e))
+      toast.error("Falha no rollback", { description: err.message })
     } finally {
       setIsProcessing(false)
       setConfirmAction(null)
